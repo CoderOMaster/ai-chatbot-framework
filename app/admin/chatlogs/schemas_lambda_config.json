@@ -1,0 +1,24 @@
+{
+  "runtime": "python3.10",
+  "handler": "schemas.lambda_handler",
+  "timeout": 300,
+  "memory": 1024,
+  "environment_variables": {
+    "AWS_REGION": "us-east-1",
+    "CHAT_TABLE_NAME": "chat-logs-table",
+    "LOG_LEVEL": "INFO",
+    "TIMEOUT_BUFFER_MS": "300"
+  },
+  "iam_permissions": [
+    "dynamodb:PutItem",
+    "dynamodb:Query",
+    "dynamodb:Scan",
+    "dynamodb:GetItem",
+    "logs:CreateLogGroup",
+    "logs:CreateLogStream",
+    "logs:PutLogEvents"
+  ],
+  "layers": [
+    "arn:aws:lambda:REGION:ACCOUNT_ID:layer:pydantic-layer:VERSION  # optional - only if you don't bundle pydantic"
+  ]
+}

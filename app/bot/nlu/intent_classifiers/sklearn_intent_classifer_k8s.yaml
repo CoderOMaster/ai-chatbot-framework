@@ -1,0 +1,69 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sklearn-intent-classifier
+  labels:
+    app: sklearn-intent-classifier
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: sklearn-intent-classifier
+  template:
+    metadata:
+      labels:
+        app: sklearn-intent-classifier
+    spec:
+      containers:
+        - name: sklearn-intent-classifier
+          image: <your-registry>/sklearn-intent-classifier:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: MODEL_DIR
+              value: "/app/models"
+            - name: MODEL_NAME
+              value: "sklearn_intent_model.hd5"
+            - name: SPACY_MODEL
+              value: "en_core_web_md"
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: DB_URL
+              value: ""
+            - name: METRICS_PATH
+              value: "/metrics"
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readiness
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      # Optional: nodeSelector, tolerations, affinity
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sklearn-intent-classifier
+spec:
+  selector:
+    app: sklearn-intent-classifier
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+  type: ClusterIP

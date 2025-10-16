@@ -1,0 +1,69 @@
+### Kubernetes Deployment + Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: intent-service
+  labels:
+    app: intent-service
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: intent-service
+  template:
+    metadata:
+      labels:
+        app: intent-service
+    spec:
+      containers:
+        - name: intent-service
+          image: <YOUR_REGISTRY>/intent-service:latest
+          ports:
+            - containerPort: 8000
+          env:
+            - name: MONGO_URI
+              value: "mongodb://mongo:27017"
+            - name: MONGO_DB
+              value: "mydb"
+            - name: MONGO_MAX_POOL
+              value: "50"
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: SERVICE_NAME
+              value: "intent-service"
+            - name: PORT
+              value: "8000"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readiness
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: intent-service
+spec:
+  selector:
+    app: intent-service
+  ports:
+    - port: 80
+      targetPort: 8000
+      protocol: TCP
+  type: ClusterIP

@@ -1,0 +1,257 @@
+{
+  "timestamp": "2025-10-16 01:22:22",
+  "summary": {
+    "total_files": 34,
+    "successfully_refactored": 34,
+    "failed": 0,
+    "lambda_functions": 2,
+    "microservices": 32,
+    "hybrid": 0,
+    "total_estimated_hours": 398,
+    "by_complexity": {
+      "Low": 20,
+      "Medium": 14,
+      "High": 0
+    }
+  },
+  "files": [
+    {
+      "file": "ai-chatbot-framework/app/admin/integrations/schemas.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Low",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/admin/bots/__init__.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Low",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/bot/__init__.py",
+      "status": "success",
+      "deployment_type": "Lambda",
+      "complexity": "Low",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/admin/entities/schemas.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Low",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/admin/integrations/store.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Low",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/bot/memory/memory_saver_mongo.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Low",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/bot/channels/__init__.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Low",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/bot/dialogue_manager/utils.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Low",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/admin/chatlogs/schemas.py",
+      "status": "success",
+      "deployment_type": "Lambda",
+      "complexity": "Low",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/admin/__init__.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Low",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/admin/entities/store.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Low",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/admin/entities/__init__.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Low",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/admin/entities/routes.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Low",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/admin/intents/store.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Low",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/admin/intents/routes.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Low",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/bot/dialogue_manager/http_client.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Low",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/admin/bots/store.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Low",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/admin/chatlogs/routes.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Low",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/bot/channels/rest/__init__.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Low",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/admin/integrations/routes.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Low",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/admin/bots/routes.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Medium",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/admin/intents/schemas.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Medium",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/admin/chatlogs/store.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Medium",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/bot/nlu/featurizers/spacy_featurizer.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Medium",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/bot/memory/models.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Medium",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/bot/nlu/featurizers/__init__.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Medium",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/bot/nlu/llm/zero_shot_nlu_openai.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Medium",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/bot/channels/facebook/messenger.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Medium",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/bot/channels/facebook/routes.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Medium",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/bot/nlu/__init__.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Medium",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/bot/dialogue_manager/dialogue_manager.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Medium",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/admin/test/routes.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Medium",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/bot/channels/rest/routes.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Medium",
+      "error": null
+    },
+    {
+      "file": "ai-chatbot-framework/app/bot/nlu/intent_classifiers/sklearn_intent_classifer.py",
+      "status": "success",
+      "deployment_type": "Microservice",
+      "complexity": "Medium",
+      "error": null
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+fastapi==0.95.2
+uvicorn[standard]==0.22.0
+spacy==3.5.3
+prometheus-client==0.16.0
+SQLAlchemy==1.4.49
+psycopg2-binary==2.9.6
+pydantic==1.10.11
+python-json-logger==2.0.7

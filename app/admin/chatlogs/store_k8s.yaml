@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chatlog-service
+  labels:
+    app: chatlog-service
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: chatlog-service
+  template:
+    metadata:
+      labels:
+        app: chatlog-service
+    spec:
+      containers:
+        - name: chatlog-service
+          image: <your-registry>/chatlog-service:latest
+          ports:
+            - containerPort: 8000
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+          env:
+            - name: MONGODB_URI
+              value: "<your-mongo-uri>"
+            - name: MONGODB_DB
+              value: "chatbot"
+            - name: MONGODB_COLLECTION
+              value: "state"
+          readinessProbe:
+            httpGet:
+              path: /readiness
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 30
+      terminationGracePeriodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chatlog-service
+spec:
+  selector:
+    app: chatlog-service
+  ports:
+    - port: 80
+      targetPort: 8000
+      protocol: TCP
+  type: ClusterIP
