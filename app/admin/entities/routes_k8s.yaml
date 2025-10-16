@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: entities-deployment
+  labels:
+    app: entities
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: entities
+  template:
+    metadata:
+      labels:
+        app: entities
+    spec:
+      containers:
+        - name: entities
+          image: <your-registry>/entities-service:latest
+          ports:
+            - containerPort: 8000
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1024Mi"
+          env:
+            - name: SERVICE_NAME
+              value: "entities-service"
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: DB_URL
+              value: "<your-db-connection-string>"
+            - name: DB_POOL_MIN_SIZE
+              value: "1"
+            - name: DB_POOL_MAX_SIZE
+              value: "10"
+            - name: PORT
+              value: "8000"
+            - name: READINESS_ENABLED
+              value: "true"
+          readinessProbe:
+            httpGet:
+              path: /readiness
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: entities-service
+spec:
+  selector:
+    app: entities
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+  type: ClusterIP

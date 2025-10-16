@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spacy-featurizer
+  labels:
+    app: spacy-featurizer
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: spacy-featurizer
+  template:
+    metadata:
+      labels:
+        app: spacy-featurizer
+    spec:
+      containers:
+        - name: spacy-featurizer
+          image: <REPLACE_WITH_YOUR_IMAGE>:latest
+          ports:
+            - containerPort: 8000
+          env:
+            - name: MODEL_NAME
+              value: "en_core_web_sm"
+            - name: DB_URL
+              value: ""
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: METRICS_ENABLED
+              value: "true"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+          readinessProbe:
+            httpGet:
+              path: /readiness
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spacy-featurizer
+spec:
+  selector:
+    app: spacy-featurizer
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+  type: ClusterIP

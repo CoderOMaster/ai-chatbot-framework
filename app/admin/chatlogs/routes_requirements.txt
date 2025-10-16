@@ -1,0 +1,11 @@
+fastapi==0.95.2
+uvicorn==0.22.0
+python-json-logger==2.0.4
+prometheus-client==0.15.0
+# Database driver(s) - pin the one your store uses. Examples below; uncomment the one you need.
+# asyncpg==0.27.0
+# psycopg2-binary==2.9.7
+# sqlalchemy==1.4.46
+# databases==0.5.7
+
+# Keep dependencies explicit for reproducible builds

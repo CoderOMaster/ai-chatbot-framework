@@ -1,0 +1,26 @@
+{
+  "runtime": "python3.11",
+  "handler": "__init__.lambda_handler",
+  "timeout": 300,
+  "memory": 1024,
+  "environment_variables": {
+    "REGION": "us-east-1",
+    "BUCKET_NAME": "<your-s3-bucket>",
+    "TABLE_NAME": "<your-dynamodb-table>",
+    "DEFAULT_KEY": "default-key",
+    "LOG_LEVEL": "INFO",
+    "OPERATION_MODE": "read",
+    "TIMEOUT_SAFETY_MS": "500",
+    "CORS_ORIGIN": "*"
+  },
+  "iam_permissions": [
+    "logs:CreateLogGroup",
+    "logs:CreateLogStream",
+    "logs:PutLogEvents",
+    "s3:GetObject",
+    "s3:PutObject",
+    "dynamodb:GetItem",
+    "dynamodb:PutItem"
+  ],
+  "layers": []
+}

@@ -1,0 +1,14 @@
+fastapi==0.96.2
+uvicorn==0.22.0
+spacy==3.6.0
+numpy==1.25.1
+thinc==8.1.0
+cymem==2.0.7
+preshed==3.0.8
+murmurhash==1.0.9
+python-json-logger==2.0.7
+sqlalchemy==2.1.0
+prometheus-client==0.17.0
+pydantic==1.10.12
+
+# Note: If the SpacyFeaturizer or your project needs other packages (scipy / sklearn), add them here

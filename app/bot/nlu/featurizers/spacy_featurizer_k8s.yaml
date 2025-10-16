@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spacy-featurizer
+  labels:
+    app: spacy-featurizer
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: spacy-featurizer
+  template:
+    metadata:
+      labels:
+        app: spacy-featurizer
+    spec:
+      containers:
+        - name: spacy-featurizer
+          image: yourrepo/spacy-featurizer:latest
+          ports:
+            - containerPort: 8000
+          env:
+            - name: SPACY_MODEL
+              value: "en_core_web_sm"
+            - name: SERVICE_PORT
+              value: "8000"
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: DATABASE_URL
+              value: "postgresql://user:pass@hostname:5432/dbname"
+            - name: DB_POOL_SIZE
+              value: "5"
+            - name: DB_MAX_OVERFLOW
+              value: "10"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readiness
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spacy-featurizer
+spec:
+  selector:
+    app: spacy-featurizer
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 8000
+      protocol: TCP

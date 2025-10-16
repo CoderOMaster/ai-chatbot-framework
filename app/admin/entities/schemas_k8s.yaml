@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: entities-service
+  labels:
+    app: entities-service
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: entities-service
+  template:
+    metadata:
+      labels:
+        app: entities-service
+    spec:
+      containers:
+        - name: entities-service
+          image: <YOUR_REGISTRY>/entities-service:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+          env:
+            - name: MONGO_URI
+              value: "mongodb://mongo:27017"
+            - name: MONGO_DB
+              value: "app_db"
+            - name: MONGO_MAX_POOL_SIZE
+              value: "100"
+            - name: LOG_LEVEL
+              value: "INFO"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readiness
+              port: 8000
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: entities-service
+spec:
+  selector:
+    app: entities-service
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+  type: ClusterIP

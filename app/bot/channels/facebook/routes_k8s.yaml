@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: facebook-webhook-service
+  labels:
+    app: facebook-webhook
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: facebook-webhook
+  template:
+    metadata:
+      labels:
+        app: facebook-webhook
+    spec:
+      containers:
+        - name: facebook-webhook
+          image: <your-registry>/facebook-webhook:latest
+          ports:
+            - containerPort: 8000
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+          env:
+            - name: HOST
+              value: "0.0.0.0"
+            - name: PORT
+              value: "8000"
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: DATABASE_URL
+            - name: PROMETHEUS_ENABLED
+              value: "true"
+            - name: READINESS_PATH
+              value: "/ready"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: facebook-webhook-service
+spec:
+  selector:
+    app: facebook-webhook
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+  type: ClusterIP

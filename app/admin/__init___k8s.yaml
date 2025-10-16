@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: example-microservice
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: example-microservice
+  template:
+    metadata:
+      labels:
+        app: example-microservice
+    spec:
+      containers:
+        - name: example-microservice
+          image: <your-registry>/example-microservice:latest
+          ports:
+            - containerPort: 8000
+          env:
+            - name: DB_URL
+              value: "postgresql+psycopg2://user:password@mydb:5432/db"
+            - name: DB_POOL_SIZE
+              value: "10"
+            - name: DB_MAX_OVERFLOW
+              value: "20"
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: REQUEST_METRICS
+              value: "true"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /readiness
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: example-microservice
+spec:
+  selector:
+    app: example-microservice
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+  type: ClusterIP

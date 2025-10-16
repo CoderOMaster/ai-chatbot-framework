@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zero-shot-nlu
+  labels:
+    app: zero-shot-nlu
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: zero-shot-nlu
+  template:
+    metadata:
+      labels:
+        app: zero-shot-nlu
+    spec:
+      containers:
+        - name: zero-shot-nlu
+          image: your-registry/zero-shot-nlu:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: OPENAI_BASE_URL
+              value: "http://your-llm-sidecar:11434/v1"
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: openai-secret
+                  key: api_key
+            - name: PROMPTS_PATH
+              value: "/app/app/bot/nlu/llm/prompts"
+            - name: PROMPT_FILENAME
+              value: "ZERO_SHOT_LEARNING_PROMPT.md"
+            - name: PORT
+              value: "8000"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /readiness
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 20
+      # If you run a sidecar model server, define it here
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zero-shot-nlu
+spec:
+  selector:
+    app: zero-shot-nlu
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
+  type: ClusterIP
