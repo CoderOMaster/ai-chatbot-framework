@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  core-api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGODB_HOST
+      - MONGODB_DATABASE
+      - JWT_SECRET
+      - MODEL_FORWARDING_ENDPOINT
+      - OLLSAMA_API_KEY
+    depends_on:
+      - mongodb
+      - nlu-runtime
+
+  mongodb:
+    image: mongo:6.0
+    ports:
+      - "27017:27017"
+
+  # This assumes the nlu_runtime service from the nlu batch is available
+  nlu-runtime:
+    image: local/nlu-runtime:latest
+    ports:
+      - "11434:11434"

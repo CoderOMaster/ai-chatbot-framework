@@ -2,14 +2,18 @@ from typing import Dict
 from app.admin.bots.schemas import Bot, NLUConfiguration
 from app.admin.entities.store import list_entities, bulk_import_entities
 from app.admin.intents.store import list_intents, bulk_import_intents
-from app.database import database
+from app.database import get_db
 from datetime import datetime
 
-bot_collection = database.get_collection("bot")
+
+async def _get_bot_collection():
+    db = get_db()
+    return db.get_collection("bot")
 
 
 async def ensure_default_bot():
     # Check if the default bot exists
+    bot_collection = await _get_bot_collection()
     default_bot = await bot_collection.find_one({"name": "default"})
     if default_bot is None:
         # Create the default bot
@@ -24,6 +28,7 @@ async def ensure_default_bot():
 
 
 async def get_bot(name: str) -> Bot:
+    bot_collection = await _get_bot_collection()
     bot = await bot_collection.find_one({"name": name})
     return Bot.model_validate(bot)
 
@@ -34,6 +39,7 @@ async def get_nlu_config(name: str) -> NLUConfiguration:
 
 
 async def update_nlu_config(name: str, nlu_config: dict):
+    bot_collection = await _get_bot_collection()
     await bot_collection.update_one(
         {"name": name}, {"$set": {"nlu_config": nlu_config}}
     )

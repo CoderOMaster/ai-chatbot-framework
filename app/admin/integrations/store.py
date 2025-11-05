@@ -1,20 +1,27 @@
 from typing import List, Optional
-from app.database import database
+from app.database import get_db
 from .schemas import Integration, IntegrationUpdate
 
 collection_name = "integrations"
 
 
+async def _get_collection():
+    db = get_db()
+    return db[collection_name]
+
+
 async def list_integrations() -> List[Integration]:
     """Get all integrations."""
-    cursor = database[collection_name].find()
+    collection = await _get_collection()
+    cursor = collection.find()
     integrations = await cursor.to_list(length=None)
     return [Integration(**integration) for integration in integrations]
 
 
 async def get_integration(id: str) -> Optional[Integration]:
     """Get a specific integration by ID."""
-    integration = await database[collection_name].find_one({"id": id})
+    collection = await _get_collection()
+    integration = await collection.find_one({"id": id})
     if integration:
         return Integration(**integration)
     return None
@@ -24,9 +31,10 @@ async def update_integration(
     id: str, integration: IntegrationUpdate
 ) -> Optional[Integration]:
     """Update an integration's status and settings."""
+    collection = await _get_collection()
     update_data = integration.model_dump(exclude_unset=True)
 
-    result = await database[collection_name].find_one_and_update(
+    result = await collection.find_one_and_update(
         {"id": id},
         {"$set": update_data},
         return_document=True,
@@ -39,6 +47,7 @@ async def update_integration(
 
 async def ensure_default_integrations():
     """Ensure default integrations exist in the database."""
+    collection = await _get_collection()
     default_integrations = [
         {
             "id": "facebook",
@@ -61,7 +70,7 @@ async def ensure_default_integrations():
     ]
 
     for integration in default_integrations:
-        await database[collection_name].update_one(
+        await collection.update_one(
             {"id": integration["id"]},
             {"$setOnInsert": integration},
             upsert=True,

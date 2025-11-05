@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+gunicorn
+motor
+pydantic
+aiohttp
+jinja2
+requests

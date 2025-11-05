@@ -1,0 +1,3 @@
+jinja2
+requests
+# Keep langchain/openai out of the function package; put them in the layer

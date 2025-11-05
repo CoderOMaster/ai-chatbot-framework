@@ -1,10 +1,12 @@
 from typing import List, Optional
 from datetime import datetime
-from app.database import client
+from app.database import get_db
 from .schemas import ChatLog, ChatLogResponse, ChatThreadInfo
 
-# Initialize MongoDB collection
-collection = client["chatbot"]["state"]
+
+async def _get_collection():
+    db = get_db()
+    return db.get_collection("state")
 
 
 async def list_chatlogs(
@@ -14,6 +16,8 @@ async def list_chatlogs(
     end_date: Optional[datetime] = None,
 ) -> ChatLogResponse:
     skip = (page - 1) * limit
+
+    collection = await _get_collection()
 
     # Build query filter
     query = {}
@@ -63,6 +67,7 @@ async def list_chatlogs(
 async def get_chat_thread(thread_id: str) -> List[ChatLog]:
     """Get complete conversation history for a specific thread"""
 
+    collection = await _get_collection()
     cursor = collection.find({"thread_id": thread_id}).sort("date", 1)
     messages = await cursor.to_list(length=None)
 

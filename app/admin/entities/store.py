@@ -3,34 +3,40 @@ from typing import List, Dict
 from bson import ObjectId
 
 from app.admin.entities.schemas import Entity
-from app.database import database
+from app.database import get_db
 
-entity_collection = database.get_collection("entity")
+
+async def _get_entity_collection():
+    db = get_db()
+    return db.get_collection("entity")
 
 
 async def add_entity(entity_data: dict) -> Entity:
-    result = await entity_collection.insert_one(entity_data)
+    collection = await _get_entity_collection()
+    result = await collection.insert_one(entity_data)
     return await get_entity(str(result.inserted_id))
 
 
 async def get_entity(id: str) -> Entity:
-    entity = await entity_collection.find_one({"_id": ObjectId(id)})
+    collection = await _get_entity_collection()
+    entity = await collection.find_one({"_id": ObjectId(id)})
     return Entity.model_validate(entity)
 
 
 async def list_entities() -> List[Entity]:
-    entities = await entity_collection.find().to_list()
+    collection = await _get_entity_collection()
+    entities = await collection.find().to_list()
     return [Entity.model_validate(entity) for entity in entities]
 
 
 async def edit_entity(entity_id: str, entity_data: dict):
-    await entity_collection.update_one(
-        {"_id": ObjectId(entity_id)}, {"$set": entity_data}
-    )
+    collection = await _get_entity_collection()
+    await collection.update_one({"_id": ObjectId(entity_id)}, {"$set": entity_data})
 
 
 async def delete_entity(entity_id: str):
-    await entity_collection.delete_one({"_id": ObjectId(entity_id)})
+    collection = await _get_entity_collection()
+    await collection.delete_one({"_id": ObjectId(entity_id)})
 
 
 async def list_synonyms():
@@ -46,10 +52,11 @@ async def list_synonyms():
 
 
 async def bulk_import_entities(entities: List[Dict]) -> List[str]:
+    collection = await _get_entity_collection()
     created_entities = []
     if entities:
         for entity in entities:
-            result = await entity_collection.update_one(
+            result = await collection.update_one(
                 {"name": entity.get("name")}, {"$set": entity}, upsert=True
             )
             if result.upserted_id:

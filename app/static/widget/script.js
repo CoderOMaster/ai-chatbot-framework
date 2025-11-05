@@ -325,7 +325,8 @@
 
     async initChat() {
       try {
-        const response = await fetch(`${window.iky_base_url}/bots/channels/rest/webbook`, {
+        const base = (window.iky_base_url || window.location.origin).replace(/\/+$/, '');
+        const response = await fetch(`${base}/bots/channels/rest/webbook`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -360,7 +361,8 @@
       this.showTyping();
 
       try {
-        const response = await fetch(`${window.iky_base_url}/bots/channels/rest/webbook`, {
+        const base = (window.iky_base_url || window.location.origin).replace(/\/+$/, '');
+        const response = await fetch(`${base}/bots/channels/rest/webbook`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
