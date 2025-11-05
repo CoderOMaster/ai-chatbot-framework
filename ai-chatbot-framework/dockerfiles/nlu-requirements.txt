@@ -1,0 +1,13 @@
+spacy
+scikit-learn
+tensorflow
+pycrfsuite
+aiohttp
+jinja2
+cloudpickle
+numpy
+pandas
+psutil
+fastapi
+uvicorn
+motor

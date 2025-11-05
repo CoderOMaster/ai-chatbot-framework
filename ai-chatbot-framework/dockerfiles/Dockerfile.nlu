@@ -1,0 +1,34 @@
+# Multi-stage Dockerfile for NLU services
+
+FROM python:3.11-slim as base
+
+# Install system deps for spacy, tensorflow, pycrfsuite
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc \
+    g++ \
+    libsndfile1 \
+    libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY dockerfiles/nlu-requirements.txt /tmp/requirements.txt
+
+# Install python deps
+RUN pip install --upgrade pip setuptools wheel && \
+    pip wheel --wheel-dir /wheels -r /tmp/requirements.txt
+
+FROM base as runtime
+COPY --from=base /wheels /wheels
+RUN pip install --no-index --find-links=/wheels -r /tmp/requirements.txt
+
+# Copy application code
+COPY . /app
+
+ENV MODEL_DIR=/models
+VOLUME ["/models"]
+
+EXPOSE 8001
+
+CMD ["uvicorn", "nlu_service.api:app", "--host", "0.0.0.0", "--port", "8001"]

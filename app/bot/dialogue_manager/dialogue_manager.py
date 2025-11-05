@@ -16,8 +16,7 @@ from app.bot.dialogue_manager.models import (
     UserMessage,
 )
 from app.bot.dialogue_manager.http_client import call_api, APICallExcetion
-from app.config import app_config
-from app.database import client
+from app.common.config import get_settings
 
 logger = logging.getLogger("dialogue_manager")
 
@@ -44,9 +43,14 @@ class DialogueManager:
         self.confidence_threshold = intent_confidence_threshold
 
     @classmethod
-    async def from_config(cls):
+    async def from_config(cls, database=None):
         """
-        Initialize DialogueManager with all required dependencies
+        Initialize DialogueManager with all required dependencies.
+
+        Accepts an optional `database` AsyncIOMotorDatabase instance so callers
+        (such as application lifecycles) can inject the runtime DB. If no
+        database is provided, components that require DB access are still able
+        to resolve it via app.database.get_db() lazily.
         """
 
         # Load all intents and convert to domain models
@@ -54,10 +58,15 @@ class DialogueManager:
         intents = [IntentModel.from_db(intent) for intent in db_intents]
 
         # Initialize pipeline with components
+        # NOTE: For heavy model-backed pipelines, pipeline components should
+        # delegate inference to a remote runtime. The create/get_pipeline
+        # implementation already supports ZeroShot components that call an
+        # HTTP endpoint.
         nlu_pipeline = await get_pipeline()
 
         # Get configuration
-        fallback_intent_id = app_config.DEFAULT_FALLBACK_INTENT_NAME
+        settings = get_settings()
+        fallback_intent_id = settings.DEFAULT_FALLBACK_INTENT_NAME
 
         # Get bot configuration
         bot = await get_bot("default")
@@ -65,7 +74,14 @@ class DialogueManager:
             bot.nlu_config.traditional_settings.intent_detection_threshold
         )
 
-        memory_saver = MemorySaverMongo(client)
+        # memory saver should be constructed with an AsyncIOMotorDatabase
+        if database is None:
+            # lazy import to avoid circular imports at module import time
+            from app.database import get_db
+
+            database = get_db()
+
+        memory_saver = MemorySaverMongo(database)
 
         return cls(
             memory_saver,
@@ -81,8 +97,12 @@ class DialogueManager:
         Reloads ML models and synonyms.
         """
         # Load models
-        ok = self.nlu_pipeline.load(models_dir)
-        if not ok:
+        try:
+            ok = self.nlu_pipeline.load(models_dir)
+            if not ok:
+                self.nlu_pipeline = None
+        except Exception:
+            logger.exception("Failed to update NLU pipeline models")
             self.nlu_pipeline = None
         logger.info("NLU Pipeline models updated")
 
