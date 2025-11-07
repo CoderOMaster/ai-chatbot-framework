@@ -1,10 +1,14 @@
 from typing import List, Optional
 from datetime import datetime
-from app.database import client
+
+from app.common.database import get_mongo_client
+from ai_chatbot_common.config import get_settings
 from .schemas import ChatLog, ChatLogResponse, ChatThreadInfo
 
-# Initialize MongoDB collection
-collection = client["chatbot"]["state"]
+# Initialize MongoDB collection using configured database
+_settings = get_settings()
+_client = get_mongo_client(_settings)
+collection = _client.get_database(_settings.MONGODB_DATABASE).get_collection("state")
 
 
 async def list_chatlogs(

@@ -1,0 +1,1 @@
+# Legacy shim package for lambda handlers

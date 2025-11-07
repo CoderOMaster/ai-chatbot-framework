@@ -1,4 +1,32 @@
 (() => {
+  // Resolve API base URL with graceful fallbacks
+  function resolveBaseUrl() {
+    // 1) Explicit global override
+    if (typeof window !== 'undefined' && window.iky_base_url) {
+      return String(window.iky_base_url).replace(/\/+$/, '');
+    }
+
+    // 2) data-api-base-url attribute on current script tag
+    try {
+      const current = document.currentScript;
+      if (current && current.getAttribute) {
+        const attr = current.getAttribute('data-api-base-url');
+        if (attr) return attr.replace(/\/+$/, '');
+      }
+    } catch (e) {
+      // ignore
+    }
+
+    // 3) Last resort: same origin with conventional /api prefix
+    return `${window.location.origin}/api`;
+  }
+
+  const API_BASE = resolveBaseUrl();
+  // For backward-compat: keep window.iky_base_url populated
+  if (!window.iky_base_url) {
+    window.iky_base_url = API_BASE;
+  }
+
   const styles = `
     .iky-chat-widget {
       position: fixed;
@@ -325,7 +353,7 @@
 
     async initChat() {
       try {
-        const response = await fetch(`${window.iky_base_url}/bots/channels/rest/webbook`, {
+        const response = await fetch(`${API_BASE}/bots/channels/rest/webbook`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -360,7 +388,7 @@
       this.showTyping();
 
       try {
-        const response = await fetch(`${window.iky_base_url}/bots/channels/rest/webbook`, {
+        const response = await fetch(`${API_BASE}/bots/channels/rest/webbook`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',

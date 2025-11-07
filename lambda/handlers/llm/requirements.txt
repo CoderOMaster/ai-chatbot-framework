@@ -1,0 +1,5 @@
+# Keep function package light; heavy deps should be provided by a Lambda Layer
+Jinja2>=3.1.2
+# Optionally use minimal langchain core interfaces if not in layer
+# langchain-core==0.3.33
+# langchain-openai==0.3.3

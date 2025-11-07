@@ -1,0 +1,46 @@
+# syntax=docker/dockerfile:1
+
+# Base stage
+FROM python:3.11-slim AS base
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+WORKDIR /app
+
+# System deps for building native wheels
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc \
+    g++ \
+    libffi-dev \
+    libssl-dev \
+    libstdc++6 \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Stage for Python deps
+FROM base AS deps
+COPY ai-chatbot-framework/dockerfiles/nlu-requirements.txt /tmp/requirements.txt
+RUN pip install --upgrade pip && pip wheel --wheel-dir=/wheels -r /tmp/requirements.txt
+
+# Final runtime image
+FROM base AS final
+
+# Copy wheels and install
+COPY --from=deps /wheels /wheels
+RUN pip install --no-index --find-links=/wheels /wheels/*
+
+# Copy project
+COPY . /app
+
+# Default environment
+ENV MODEL_DIR=/models \
+    SPACY_LANG_MODEL=xx_core_web_sm
+
+# Create mount point for model artifacts
+VOLUME ["/models"]
+
+EXPOSE 8001
+
+# Default command can be overridden
+CMD ["uvicorn", "nlu_service.runtime:app", "--host", "0.0.0.0", "--port", "8001"]
