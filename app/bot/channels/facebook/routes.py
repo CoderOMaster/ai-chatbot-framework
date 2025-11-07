@@ -1,10 +1,15 @@
-from typing import Dict, Any
+from typing import Dict, Any, Optional, List
 import logging
+import json
 from fastapi import APIRouter, Request, HTTPException, Depends, BackgroundTasks
+
 from app.admin.integrations.store import get_integration
-from app.dependencies import get_dialogue_manager
-from app.bot.dialogue_manager.dialogue_manager import DialogueManager
-from .messenger import FacebookReceiver
+from ai_chatbot_common.webhooks import (
+    verify_facebook_signature,
+    forward_http_json,
+    send_to_sqs,
+)
+import os
 
 router = APIRouter(prefix="/facebook", tags=["facebook"])
 logger = logging.getLogger(__name__)
@@ -20,6 +25,10 @@ async def get_facebook_config():
     return integration.settings
 
 
+def _get_env(name: str, default: Optional[str] = None) -> Optional[str]:
+    return os.getenv(name, default)
+
+
 @router.get("/webhook")
 async def verify_webhook(
     request: Request, config: Dict[str, Any] = Depends(get_facebook_config)
@@ -29,12 +38,53 @@ async def verify_webhook(
     token = request.query_params.get("hub.verify_token")
     challenge = request.query_params.get("hub.challenge")
 
+    verify_token = _get_env("FACEBOOK_VERIFY_TOKEN", config.get("verify"))
+
     if hub_mode and token:
-        if hub_mode == "subscribe" and token == config["verify"]:
+        if hub_mode == "subscribe" and token == verify_token:
             return int(challenge)
         raise HTTPException(status_code=403, detail="Invalid verification token")
 
     raise HTTPException(status_code=400, detail="Invalid request parameters")
+
+
+def _forward_messages(entries: List[Dict[str, Any]]):
+    forwarding_sqs = _get_env("FORWARDING_SQS_URL")
+    forwarding_endpoint = _get_env("FORWARDING_ENDPOINT")
+
+    for entry in entries or []:
+        page_id = entry.get("id")
+        for messaging_event in entry.get("messaging", []):
+            sender_id = (messaging_event.get("sender") or {}).get("id")
+            if not sender_id:
+                continue
+            timestamp = messaging_event.get("timestamp")
+            is_postback = bool(messaging_event.get("postback"))
+            text: Optional[str] = None
+            if messaging_event.get("message") and "text" in messaging_event["message"]:
+                text = messaging_event["message"]["text"]
+            elif is_postback:
+                text = (messaging_event.get("postback") or {}).get("payload")
+
+            if text is None:
+                continue
+
+            user_message = {
+                "thread_id": sender_id,
+                "text": text,
+                "context": {
+                    "channel": "facebook",
+                    "page_id": page_id,
+                    "timestamp": timestamp,
+                    "is_postback": is_postback,
+                },
+            }
+
+            if forwarding_sqs:
+                send_to_sqs(forwarding_sqs, user_message)
+            else:
+                headers = {"x-source": "facebook-webhook"}
+                forward_http_json(forwarding_endpoint or "", user_message, headers=headers)
 
 
 @router.post("/webhook")
@@ -42,21 +92,29 @@ async def webhook(
     background_tasks: BackgroundTasks,
     request: Request,
     config: Dict[str, Any] = Depends(get_facebook_config),
-    dialogue_manager: DialogueManager = Depends(get_dialogue_manager),
 ):
-    """Handle incoming Facebook webhook events."""
+    """Handle incoming Facebook webhook events by validating and forwarding."""
     body = await request.body()
-    signature = request.headers.get("X-Hub-Signature", "")
 
-    facebook = FacebookReceiver(config, dialogue_manager)
+    # Support both headers. Starlette provides case-insensitive lookup.
+    signature = request.headers.get("X-Hub-Signature") or request.headers.get(
+        "X-Hub-Signature-256", ""
+    )
 
-    if not facebook.validate_hub_signature(body, signature):
+    app_secret = _get_env("FACEBOOK_APP_SECRET", config.get("secret", "")) or ""
+
+    if not app_secret or not verify_facebook_signature(app_secret, body, signature):
         raise HTTPException(status_code=403, detail="Invalid request signature")
 
     try:
-        data = await request.json()
-        background_tasks.add_task(facebook.process_webhook_event, data)
+        data = json.loads(body.decode("utf-8") or "{}")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
 
+    try:
+        entries = data.get("entry", [])
+        # Offload forwarding to background task to avoid blocking event loop with sync I/O
+        background_tasks.add_task(_forward_messages, entries)
         return {"success": True}
     except Exception as e:
         logger.error(f"Error processing webhook: {str(e)}")

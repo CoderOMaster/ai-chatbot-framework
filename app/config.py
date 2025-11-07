@@ -1,3 +1,5 @@
-from config import from_envvar
+# Backwards-compatibility shim. Prefer using ai_chatbot_common.config
+from ai_chatbot_common.config import get_settings
 
-app_config = from_envvar()
+# Legacy name expected by existing modules
+app_config = get_settings()

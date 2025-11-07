@@ -1,0 +1,22 @@
+version: "3.8"
+services:
+  nlu-runtime:
+    image: ai-chatbot/nlu:latest
+    command: uvicorn nlu_service.runtime:app --host 0.0.0.0 --port 8001
+    ports:
+      - "8001:8001"
+    volumes:
+      - /mnt/models:/models
+    environment:
+      - MODELS_DIR=/models
+      - SPACY_LANG_MODEL=xx_core_web_sm
+      - MONGODB_HOST
+  nlu-trainer:
+    image: ai-chatbot/nlu:latest
+    command: python -m nlu_service.trainer --train --models-dir /models
+    volumes:
+      - /mnt/models:/models
+    environment:
+      - MODELS_DIR=/models
+      - SPACY_LANG_MODEL=xx_core_web_sm
+      - TRAINING_GPU_TAG

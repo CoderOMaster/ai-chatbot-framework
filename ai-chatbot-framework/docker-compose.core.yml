@@ -1,0 +1,36 @@
+version: "3.8"
+services:
+  core-api:
+    build:
+      context: .
+      dockerfile: ai-chatbot-framework/Dockerfile
+    image: ai-chatbot/core-api:latest
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGODB_HOST
+      - MONGODB_DATABASE
+      - JWT_SECRET
+      - MODEL_FORWARDING_ENDPOINT
+      - OLLSAMA_*
+    depends_on:
+      - mongodb
+      - nlu-runtime
+  mongodb:
+    image: mongo:6.0
+    ports:
+      - "27017:27017"
+  nlu-runtime:
+    build:
+      context: .
+      dockerfile: ai-chatbot-framework/dockerfiles/Dockerfile.nlu
+    image: ai-chatbot/nlu:latest
+    command: uvicorn nlu_service.runtime:app --host 0.0.0.0 --port 8001
+    ports:
+      - "8001:8001"
+    environment:
+      - MODELS_DIR=/models
+      - SPACY_LANG_MODEL=xx_core_web_sm
+      - MONGODB_HOST
+    volumes:
+      - ./models:/models

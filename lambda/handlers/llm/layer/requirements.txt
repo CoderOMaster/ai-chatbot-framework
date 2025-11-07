@@ -1,0 +1,5 @@
+# Dependencies to package into the LLM client Lambda Layer
+langchain==0.3.17
+langchain-core==0.3.33
+langchain-openai==0.3.3
+openai>=1.40.0

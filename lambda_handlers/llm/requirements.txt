@@ -1,0 +1,5 @@
+# Minimal runtime deps for zero-shot LLM Lambda function
+Jinja2>=3.1.2
+# Heavy clients are expected to be provided via the Lambda Layer
+# langchain-core==0.3.33
+# langchain-openai==0.3.3

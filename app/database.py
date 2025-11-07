@@ -1,8 +1,9 @@
 from typing import Annotated
 from bson import ObjectId
-from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import PlainSerializer, PlainValidator
-from app.config import app_config
+
+from ai_chatbot_common.config import get_settings
+from app.common.database import get_mongo_client, get_db  # new preferred interfaces
 
 ObjectIdField = Annotated[
     ObjectId,
@@ -10,5 +11,8 @@ ObjectIdField = Annotated[
     PlainValidator(lambda x: ObjectId(x)),
 ]
 
-client = AsyncIOMotorClient(app_config.MONGODB_HOST)
-database = client.get_database(app_config.MONGODB_DATABASE)
+# Backwards-compatible globals while migrating to dependency-based access
+settings = get_settings()
+client = get_mongo_client(settings)
+# Prefer database name from settings (fallback preserved via default value)
+database = client.get_database(settings.MONGODB_DATABASE)

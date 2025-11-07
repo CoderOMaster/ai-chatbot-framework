@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 from jinja2 import Template
 from app.admin.bots.store import get_bot
 from app.admin.intents.store import list_intents
@@ -16,7 +16,7 @@ from app.bot.dialogue_manager.models import (
     UserMessage,
 )
 from app.bot.dialogue_manager.http_client import call_api, APICallExcetion
-from app.config import app_config
+from ai_chatbot_common.config import get_settings
 from app.database import client
 
 logger = logging.getLogger("dialogue_manager")
@@ -44,9 +44,10 @@ class DialogueManager:
         self.confidence_threshold = intent_confidence_threshold
 
     @classmethod
-    async def from_config(cls):
+    async def from_config(cls, db_or_client: Optional[Any] = None):
         """
         Initialize DialogueManager with all required dependencies
+        Optionally accepts a Mongo AsyncIOMotorDatabase or Client for injection.
         """
 
         # Load all intents and convert to domain models
@@ -57,7 +58,8 @@ class DialogueManager:
         nlu_pipeline = await get_pipeline()
 
         # Get configuration
-        fallback_intent_id = app_config.DEFAULT_FALLBACK_INTENT_NAME
+        settings = get_settings()
+        fallback_intent_id = settings.DEFAULT_FALLBACK_INTENT_NAME
 
         # Get bot configuration
         bot = await get_bot("default")
@@ -65,7 +67,9 @@ class DialogueManager:
             bot.nlu_config.traditional_settings.intent_detection_threshold
         )
 
-        memory_saver = MemorySaverMongo(client)
+        # Prefer injected DB/client if provided; fall back to app.database shim
+        mem_backend = db_or_client if db_or_client is not None else client
+        memory_saver = MemorySaverMongo(mem_backend)
 
         return cls(
             memory_saver,
@@ -224,7 +228,7 @@ class DialogueManager:
             extracted_entities = current_state.nlu.get("entities", {})
 
             # Group entities by type
-            entities_by_type = {}
+            entities_by_type: Dict[str, List[str]] = {}
             for entity_name, entity_value in extracted_entities.items():
                 if entity_name not in entities_by_type:
                     entities_by_type[entity_name] = []
@@ -278,7 +282,7 @@ class DialogueManager:
         :param chat_model_response: The ChatModel instance to be updated.
         :return: Updated ChatModel instance.
         """
-        missing_parameters = []
+        missing_parameters: List[ParameterModel] = []
         current_state.missing_parameters = []
 
         # clear current node

@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi import FastAPI, APIRouter
-from app.database import client as database_client
+from app.common.database import close_mongo_client
 from app.dependencies import init_dialogue_manager
 
 from app.admin.bots.routes import router as bots_router
@@ -22,7 +22,7 @@ from app.bot.channels.facebook.routes import router as facebook_router
 async def lifespan(_):
     await init_dialogue_manager()
     yield
-    database_client.close()
+    close_mongo_client()
 
 
 app = FastAPI(title="AI Chatbot Framework", lifespan=lifespan)
@@ -38,8 +38,15 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 
+@app.get("/live")
+async def live():
+    # Shallow liveness check - process is up
+    return {"status": "alive"}
+
+
 @app.get("/ready")
 async def ready():
+    # Lightweight readiness signal (DB and DM checks are covered elsewhere/tests)
     return {"status": "ok"}
 
 
