@@ -1,0 +1,28 @@
+version: "3.9"
+services:
+  core-api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGODB_HOST=mongodb://mongodb:27017
+      - MONGODB_DATABASE=chatbot
+      - JWT_SECRET=devsecret
+      - MODEL_FORWARDING_ENDPOINT=http://nlu-runtime:8001
+      - OLLSAMA_BASE_URL=http://ollama:11434
+    depends_on:
+      - mongodb
+      - nlu-runtime
+  mongodb:
+    image: mongo:6.0
+    ports:
+      - "27017:27017"
+  nlu-runtime:
+    build:
+      context: .
+      dockerfile: ai-chatbot-framework/dockerfiles/Dockerfile.nlu
+    environment:
+      - MODEL_DIR=/models
+      - SPACY_LANG_MODEL=en_core_web_sm
+    ports:
+      - "8001:8001"
