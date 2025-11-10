@@ -1,0 +1,41 @@
+# syntax=docker/dockerfile:1
+
+# Base stage with Python and system deps
+FROM python:3.11-slim AS base
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential gcc g++ curl ca-certificates \
+    libstdc++6 libffi-dev libblas-dev liblapack-dev \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+
+# Build stage to cache heavy wheels
+FROM base AS builder
+COPY ai-chatbot-framework/dockerfiles/nlu-requirements.txt /tmp/requirements.txt
+RUN pip install --upgrade pip wheel setuptools \
+    && pip wheel --no-cache-dir -r /tmp/requirements.txt -w /wheels
+
+# Final runtime image
+FROM base AS runtime
+WORKDIR /app
+COPY --from=builder /wheels /wheels
+RUN pip install --no-cache-dir /wheels/*
+
+# Copy application code
+COPY . /app
+
+# Environment
+ENV MODEL_DIR=/models \
+    SPACY_LANG_MODEL=xx_core_web_sm \
+    UVICORN_WORKERS=1
+
+# Create models mount
+VOLUME ["/models"]
+
+# Optionally download spaCy model at build time if provided
+ARG SPACY_DOWNLOAD_MODEL=
+RUN if [ -n "$SPACY_DOWNLOAD_MODEL" ]; then python -m spacy download "$SPACY_DOWNLOAD_MODEL" || true; fi
+
+EXPOSE 8001
+CMD ["uvicorn", "nlu_service.api:app", "--host", "0.0.0.0", "--port", "8001"]

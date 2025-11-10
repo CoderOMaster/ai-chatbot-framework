@@ -90,3 +90,5 @@ async def create_zero_shot_pipeline(**kwargs):
             SynonymReplacer(synonyms),
         ]
     )
+
+# Compatibility import note: for runtime microservice, prefer nlu_service.api / trainer entrypoints.
