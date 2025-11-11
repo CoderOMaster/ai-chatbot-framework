@@ -1,10 +1,15 @@
 from typing import List, Optional
 from datetime import datetime
-from app.database import client
+from app.common.config import Settings
+from app.common.database import get_db
 from .schemas import ChatLog, ChatLogResponse, ChatThreadInfo
 
-# Initialize MongoDB collection
-collection = client["chatbot"]["state"]
+_settings = Settings()
+
+
+async def _collection():
+    db = await get_db(_settings)
+    return db["state"]
 
 
 async def list_chatlogs(
@@ -14,6 +19,8 @@ async def list_chatlogs(
     end_date: Optional[datetime] = None,
 ) -> ChatLogResponse:
     skip = (page - 1) * limit
+
+    col = await _collection()
 
     # Build query filter
     query = {}
@@ -30,7 +37,7 @@ async def list_chatlogs(
         {"$group": {"_id": "$thread_id"}},
         {"$count": "total"},
     ]
-    result = await collection.aggregate(pipeline).to_list(1)
+    result = await col.aggregate(pipeline).to_list(1)
     total = result[0]["total"] if result else 0
 
     # Get paginated results grouped by thread_id with latest date
@@ -50,7 +57,7 @@ async def list_chatlogs(
     ]
 
     conversations = []
-    async for doc in collection.aggregate(pipeline):
+    async for doc in col.aggregate(pipeline):
         conversations.append(
             ChatThreadInfo(thread_id=doc["thread_id"], date=doc["date"])
         )
@@ -63,7 +70,8 @@ async def list_chatlogs(
 async def get_chat_thread(thread_id: str) -> List[ChatLog]:
     """Get complete conversation history for a specific thread"""
 
-    cursor = collection.find({"thread_id": thread_id}).sort("date", 1)
+    col = await _collection()
+    cursor = col.find({"thread_id": thread_id}).sort("date", 1)
     messages = await cursor.to_list(length=None)
 
     if not messages:

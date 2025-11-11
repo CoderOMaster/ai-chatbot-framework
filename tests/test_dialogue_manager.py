@@ -371,3 +371,48 @@ class TestDialogueManager:
             assert current_state.extracted_parameters["size"] == "large"
             assert current_state.extracted_parameters["toppings"] == "pepperoni"
             assert current_state.missing_parameters == []
+
+    @pytest.mark.asyncio
+    async def test_api_trigger_failure_sets_friendly_message(
+        self, dialogue_manager, mock_nlu_pipeline, mock_memory_saver
+    ):
+        # Setup state ready to call API (missing none after extracting topping)
+        initial_state = State(
+            thread_id="user1",
+            user_message=UserMessage(text="pepperoni", context={}, thread_id="user1"),
+            complete=False,
+            parameters=[
+                {"name": "size", "type": "pizza_size", "required": True},
+                {"name": "toppings", "type": "pizza_topping", "required": True},
+            ],
+            extracted_parameters={"size": "large"},
+            missing_parameters=["toppings"],
+            current_node="toppings",
+            intent={"id": "order_pizza"},
+        )
+        initial_state.nlu = {
+            "intent": {"intent": "order_pizza", "confidence": 0.95},
+            "entities": {"pizza_topping": "pepperoni"},
+        }
+        mock_memory_saver.get.return_value = initial_state
+
+        # Next message provides topping; API call fails
+        mock_nlu_pipeline.process.return_value = {
+            "intent": {"intent": "order_pizza", "confidence": 0.95},
+            "entities": {"pizza_topping": "pepperoni"},
+        }
+
+        from app.bot.dialogue_manager.http_client import APICallExcetion
+
+        with patch(
+            "app.bot.dialogue_manager.dialogue_manager.call_api", new_callable=AsyncMock
+        ) as mock_call_api:
+            mock_call_api.side_effect = APICallExcetion("boom")
+
+            message = UserMessage(text="pepperoni", context={}, thread_id="user1")
+            current_state = await dialogue_manager.process(message)
+
+            assert current_state.complete is True
+            assert current_state.bot_message == [
+                {"text": "Service is not available. Please try again later."}
+            ]

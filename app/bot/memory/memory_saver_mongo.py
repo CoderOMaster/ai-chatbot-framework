@@ -1,5 +1,5 @@
-from motor.motor_asyncio import AsyncIOMotorClient
 from typing import Text, Optional, List
+from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.bot.memory.models import State
 from app.bot.memory import MemorySaver
 
@@ -7,12 +7,12 @@ from app.bot.memory import MemorySaver
 class MemorySaverMongo(MemorySaver):
     """
     MemorySaverMongo implements the MemorySaver interface for MongoDB.
+    Now depends on an injected AsyncIOMotorDatabase instance (adapter pattern).
     """
 
-    def __init__(self, client: AsyncIOMotorClient):
-        self.client = client
-        self.db = client.get_database("chatbot")
-        self.collection = self.db.get_collection("state")
+    def __init__(self, db: AsyncIOMotorDatabase, collection_name: str = "state"):
+        self.db = db
+        self.collection = self.db.get_collection(collection_name)
 
     async def save(self, thread_id: Text, state: State):
         await self.collection.insert_one(state.to_dict())
@@ -28,7 +28,6 @@ class MemorySaverMongo(MemorySaver):
         return None
 
     async def get_all(self, thread_id: Text) -> List[State]:
-        results = await self.collection.find(
-            {"thread_id": thread_id}, sort=[("$natural", -1)]
-        ).to_list()
+        cursor = self.collection.find({"thread_id": thread_id}, sort=[("$natural", -1)])
+        results = await cursor.to_list(length=None)
         return [State.from_dict(result) for result in results]

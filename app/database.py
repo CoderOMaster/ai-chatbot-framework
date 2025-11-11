@@ -1,8 +1,11 @@
 from typing import Annotated
 from bson import ObjectId
-from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import PlainSerializer, PlainValidator
-from app.config import app_config
+
+# Backward-compatible ObjectIdField and database access are provided here as shims.
+# Prefer importing from app.common.database in new code.
+from app.common.database import get_mongo_client, get_db  # noqa: F401
+from app.common.config import Settings
 
 ObjectIdField = Annotated[
     ObjectId,
@@ -10,5 +13,9 @@ ObjectIdField = Annotated[
     PlainValidator(lambda x: ObjectId(x)),
 ]
 
-client = AsyncIOMotorClient(app_config.MONGODB_HOST)
-database = client.get_database(app_config.MONGODB_DATABASE)
+# Note: avoid creating client/database on import; use factory/dependency instead.
+# Kept for backward compatibility if some modules still import these names.
+_settings = Settings()
+client = get_mongo_client(_settings)
+# database is obtained lazily by callers via get_db() to respect async patterns.
+database = None  # type: ignore
