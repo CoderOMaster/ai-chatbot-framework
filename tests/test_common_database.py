@@ -97,8 +97,11 @@ async def test_ping_db_retries_and_succeeds(monkeypatch):
     fake = FlakyClient("mongodb://ignored")
 
     monkeypatch.setattr(db, "get_mongo_client", lambda s=None: fake)
-    # Speed up backoff sleeps
-    monkeypatch.setattr(db.asyncio, "sleep", lambda *_a, **_k: types.SimpleNamespace(__await__=lambda s: iter(())))
+    # Speed up backoff sleeps - create a proper async function that returns immediately
+    async def mock_sleep(*args, **kwargs):
+        pass
+    
+    monkeypatch.setattr(db.asyncio, "sleep", mock_sleep)
 
     ok = await db.ping_db(retries=3)
     assert ok is True
@@ -119,8 +122,11 @@ async def test_ping_db_fails_after_retries(monkeypatch):
     fake = AlwaysFailClient("mongodb://ignored")
 
     monkeypatch.setattr(db, "get_mongo_client", lambda s=None: fake)
-    # Speed up backoff sleeps
-    monkeypatch.setattr(db.asyncio, "sleep", lambda *_a, **_k: types.SimpleNamespace(__await__=lambda s: iter(())))
+    # Speed up backoff sleeps - create a proper async function that returns immediately
+    async def mock_sleep(*args, **kwargs):
+        pass
+    
+    monkeypatch.setattr(db.asyncio, "sleep", mock_sleep)
 
     ok = await db.ping_db(retries=2)
     assert ok is False

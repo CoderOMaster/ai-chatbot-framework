@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import Optional
-from pydantic import BaseSettings, Field
+from pydantic import Field
+from pydantic_settings import BaseSettings
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -32,7 +33,7 @@ class Settings(BaseSettings):
         case_sensitive = False
 
     def __repr__(self) -> str:
-        safe = self.dict()
+        safe = self.model_dump()
         if safe.get("JWT_SECRET"):
             safe["JWT_SECRET"] = "***redacted***"
         if safe.get("LLM_API_KEY"):

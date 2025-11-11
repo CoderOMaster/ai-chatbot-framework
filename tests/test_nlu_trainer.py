@@ -51,7 +51,8 @@ def test_main_train_invokes_train_pipeline_and_logs(monkeypatch, caplog):
     async def fake_train_pipeline():
         called["train"] = True
 
-    monkeypatch.setattr("app.bot.nlu.pipeline_utils.train_pipeline", fake_train_pipeline)
+    # Mock the train_pipeline function in the trainer module itself
+    monkeypatch.setattr(trainer, "train_pipeline", fake_train_pipeline)
 
     caplog.set_level("INFO", logger="nlu_trainer")
     asyncio.run(trainer._main(args))

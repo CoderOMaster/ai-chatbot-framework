@@ -53,6 +53,7 @@ pluggy==1.5.0
 preshed==3.0.9
 propcache==0.2.1
 pydantic==2.10.6
+pydantic-settings==2.7.1
 pydantic_core==2.27.2
 Pygments==2.19.1
 pymongo==4.9.2

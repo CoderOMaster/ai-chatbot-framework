@@ -19,10 +19,6 @@ async def test_startup_loads_models_and_health_ok(monkeypatch):
     # Stub psutil before importing module
     monkeypatch.setitem(sys.modules, "psutil", _FakePsutil)
 
-    # Import module fresh to reset globals
-    api = importlib.import_module("app.nlu_service.api")
-    reload(api)
-
     # Prepare a fake pipeline with load() and process()
     class FakePipeline:
         def __init__(self):
@@ -33,13 +29,20 @@ async def test_startup_loads_models_and_health_ok(monkeypatch):
         def process(self, msg):
             return {"intent": {"name": "greet", "confidence": 0.9},
                     "intent_ranking": [{"name": "greet", "confidence": 0.9}],
-                    "entities": []}
+                    "entities": {}}  # Changed from [] to {} to match expected dict type
 
     async def fake_get_pipeline():
         return FakePipeline()
 
-    monkeypatch.setenv("MODEL_DIR", "/tmp/models")
+    # Patch the get_pipeline function in the pipeline_utils module
     monkeypatch.setattr("app.bot.nlu.pipeline_utils.get_pipeline", fake_get_pipeline)
+    
+    # Set environment variable
+    monkeypatch.setenv("MODEL_DIR", "/tmp/models")
+
+    # Import module fresh to reset globals
+    api = importlib.import_module("app.nlu_service.api")
+    reload(api)
 
     # Ensure globals are reset
     api._pipeline = None
@@ -61,7 +64,7 @@ async def test_startup_loads_models_and_health_ok(monkeypatch):
     resp = await api.predict(req)
     assert resp.intent["name"] == "greet"
     assert resp.intent_ranking and resp.intent_ranking[0]["name"] == "greet"
-    assert resp.entities == []
+    assert resp.entities == {}  # Changed from [] to {} to match expected dict type
 
 
 @pytest.mark.asyncio
@@ -87,13 +90,14 @@ async def test_startup_failure_sets_model_not_loaded(monkeypatch):
     # Stub psutil before importing module
     monkeypatch.setitem(sys.modules, "psutil", _FakePsutil)
 
-    api = importlib.import_module("app.nlu_service.api")
-    reload(api)
-
     async def failing_get_pipeline():
         raise RuntimeError("boom")
 
+    # Patch the get_pipeline function before importing the API module
     monkeypatch.setattr("app.bot.nlu.pipeline_utils.get_pipeline", failing_get_pipeline)
+
+    api = importlib.import_module("app.nlu_service.api")
+    reload(api)
 
     api._pipeline = None
     api._model_loaded = True

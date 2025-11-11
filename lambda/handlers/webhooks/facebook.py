@@ -2,6 +2,7 @@ import os
 import json
 import hmac
 import hashlib
+import base64
 import logging
 from typing import Any, Dict, Optional
 

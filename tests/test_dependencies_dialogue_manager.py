@@ -1,6 +1,7 @@
 import asyncio
 import types
 import pytest
+import pytest_asyncio
 
 from app.dependencies import (
     get_dialogue_manager,
@@ -23,17 +24,32 @@ class DummyDialogueManager:
         self.updated_with = path
 
 
-@pytest.fixture(autouse=True)
+class MockSettings:
+    MODELS_DIR = "test-models"
+
+
+@pytest_asyncio.fixture(autouse=True)
 async def patch_dialogue_manager(monkeypatch):
-    # Patch the DialogueManager used in dependencies to our dummy
+    # Patch the DialogueManager in the dialogue_manager module
     monkeypatch.setitem(
         __import__("sys").modules,
         "app.bot.dialogue_manager.dialogue_manager",
         types.SimpleNamespace(DialogueManager=DummyDialogueManager),
     )
-    # Also ensure MODELS_DIR is deterministic
-    from app.common.config import Settings
+    
+    # Also patch the DialogueManager import in the dependencies module
+    import app.dependencies
+    monkeypatch.setattr(app.dependencies, "DialogueManager", DummyDialogueManager)
+    
+    # Mock the Settings instance in dependencies
+    monkeypatch.setattr(app.dependencies, "_settings", MockSettings())
+    
+    # Also ensure MODELS_DIR is deterministic via environment
     monkeypatch.setenv("MODELS_DIR", "test-models")
+    
+    # Reset the global dialogue manager state before each test
+    app.dependencies._dialogue_manager = None
+    
     yield
 
 
@@ -46,7 +62,7 @@ async def test_get_set_dialogue_manager_roundtrip():
 
 
 @pytest.mark.asyncio
-async def test_init_dialogue_manager_creates_and_updates_with_models_dir(monkeypatch):
+async def test_init_dialogue_manager_creates_and_updates_with_models_dir():
     await init_dialogue_manager()
     dm = await get_dialogue_manager()
     assert isinstance(dm, DummyDialogueManager)
@@ -54,7 +70,7 @@ async def test_init_dialogue_manager_creates_and_updates_with_models_dir(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_reload_dialogue_manager_replaces_global(monkeypatch):
+async def test_reload_dialogue_manager_replaces_global():
     dm1 = DummyDialogueManager()
     await set_dialogue_manager(dm1)
     await reload_dialogue_manager()

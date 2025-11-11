@@ -80,15 +80,26 @@ def test_build_chain_uses_env_and_constructs_chain(monkeypatch, tmp_prompt_dir):
         def __init__(self, **kwargs):
             created["llm_kwargs"] = kwargs
         def __or__(self, other):
-            return SimpleNamespace(llm=self, other=other)
+            return FakeStage(llm=self, other=other)
 
     class FakePrompt:
         def __or__(self, right):
             # prompt | llm => stage
-            return SimpleNamespace(llm=right)
+            return FakeStage(llm=right)
 
     class FakeParser:
         pass
+
+    class FakeStage:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+        
+        def __or__(self, right_parser):
+            # stage | parser => chain with invoke
+            class FakeChain:
+                def invoke(self, data):
+                    return {"intent": "greet", "entities": {"size": "L"}}
+            return FakeChain()
 
     def fake_from_messages(messages):
         # Ensure we do receive a system+human messages format
@@ -96,19 +107,10 @@ def test_build_chain_uses_env_and_constructs_chain(monkeypatch, tmp_prompt_dir):
         assert messages[0][0] == "system" and "{text}" in messages[1][1]
         return FakePrompt()
 
-    def fake_or(left_stage, right_parser):
-        # stage | parser => chain with invoke
-        class FakeChain:
-            def invoke(self, data):
-                return {"intent": "greet", "entities": {"size": "L"}}
-        return FakeChain()
-
     # Ensure we don't rely on real LangChain classes
     monkeypatch.setattr(zero_shot, "ChatOpenAI", FakeLLM, raising=False)
     monkeypatch.setattr(zero_shot, "ChatPromptTemplate", SimpleNamespace(from_messages=fake_from_messages), raising=False)
     monkeypatch.setattr(zero_shot, "JsonOutputParser", lambda: FakeParser(), raising=False)
-    # Patch SimpleNamespace.__or__ for our stage composition
-    monkeypatch.setattr(SimpleNamespace, "__or__", fake_or, raising=False)
 
     chain = zero_shot._build_chain(["greet"], ["size"])
     assert hasattr(chain, "invoke")

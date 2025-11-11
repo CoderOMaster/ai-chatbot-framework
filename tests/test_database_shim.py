@@ -2,13 +2,14 @@ import importlib
 import types
 import pytest
 from bson import ObjectId
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 def test_object_id_field_serialization_and_validation():
     from app.database import ObjectIdField
 
     class M(BaseModel):
+        model_config = ConfigDict(arbitrary_types_allowed=True)
         id: ObjectIdField
 
     oid = ObjectId()
@@ -18,8 +19,8 @@ def test_object_id_field_serialization_and_validation():
     assert isinstance(m.id, ObjectId)
     assert m.id == oid
 
-    # Serialization: dumps to str
-    assert m.model_dump()["id"] == str(oid)
+    # Serialization: dumps to str - use mode='json' to trigger serializers
+    assert m.model_dump(mode='json')["id"] == str(oid)
 
 
 def test_database_shim_initializes_client(monkeypatch):
