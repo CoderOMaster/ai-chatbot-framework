@@ -1,3 +1,5 @@
-from config import from_envvar
+# Deprecated: keep minimal shim for backward compatibility
+# New code should import: from app.common import Settings
+from app.common import Settings
 
-app_config = from_envvar()
+app_config = Settings()

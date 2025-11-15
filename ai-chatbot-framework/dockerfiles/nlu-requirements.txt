@@ -1,0 +1,13 @@
+spacy==3.7.4
+scikit-learn==1.4.2
+tensorflow-cpu==2.15.0
+pycrfsuite==0.9.10
+aiohttp==3.9.5
+jinja2==3.1.4
+cloudpickle==3.0.0
+numpy==1.26.4
+pandas==2.2.2
+uvicorn[standard]==0.30.1
+fastapi==0.111.0
+pydantic==2.8.2
+motor==3.6.0

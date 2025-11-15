@@ -4,10 +4,15 @@ from app.bot.dialogue_manager.models import UserMessage
 
 
 class State:
+    """DTO representing a dialogue state snapshot.
+
+    Version: v1
+    """
+
     def __init__(
         self,
         thread_id: Text,
-        user_message: UserMessage = None,
+        user_message: UserMessage | None = None,
         bot_message: Optional[List[Dict]] = None,
         context: Optional[Dict] = None,
         intent: Optional[Dict] = None,
@@ -17,11 +22,11 @@ class State:
         complete: bool = False,
         current_node: Text = "",
         date: Optional[datetime] = None,
-    ):
+    ) -> None:
         self.thread_id = thread_id
         self.user_message = user_message
         self.bot_message = bot_message
-        self.nlu = {}
+        self.nlu: Dict[str, Any] = {}
         self.context = context or {}
         self.intent = intent or {}
         self.parameters = parameters or []
@@ -34,7 +39,7 @@ class State:
     def to_dict(self) -> Dict:
         return {
             "thread_id": self.thread_id,
-            "user_message": self.user_message.to_dict(),
+            "user_message": self.user_message.to_dict() if self.user_message else None,
             "bot_message": self.bot_message,
             "nlu": self.nlu,
             "context": self.context,
@@ -49,19 +54,19 @@ class State:
 
     @classmethod
     def from_dict(cls, state_dict: Dict) -> "State":
-        # parse all the fields
+        """Create State from a plain dictionary. UserMessage must be set separately if needed."""
         return cls(
-            thread_id=state_dict["thread_id"],
-            context=state_dict["context"],
-            intent=state_dict["intent"],
-            parameters=state_dict["parameters"],
-            extracted_parameters=state_dict["extracted_parameters"],
-            missing_parameters=state_dict["missing_parameters"],
-            complete=state_dict["complete"],
-            current_node=state_dict["current_node"],
+            thread_id=state_dict.get("thread_id"),
+            context=state_dict.get("context"),
+            intent=state_dict.get("intent"),
+            parameters=state_dict.get("parameters"),
+            extracted_parameters=state_dict.get("extracted_parameters"),
+            missing_parameters=state_dict.get("missing_parameters"),
+            complete=state_dict.get("complete", False),
+            current_node=state_dict.get("current_node", ""),
         )
 
-    def update(self, user_message: UserMessage):
+    def update(self, user_message: UserMessage) -> None:
         self.user_message = user_message
         self.date = datetime.now(UTC)
         self.context.update(user_message.context)

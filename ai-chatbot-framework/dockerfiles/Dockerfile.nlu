@@ -1,0 +1,50 @@
+# Multi-stage Dockerfile for NLU runtime and trainer
+
+# Base stage
+FROM python:3.11-slim AS base
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential gcc g++ make \
+    libstdc++6 libffi-dev libssl-dev \
+    git curl && rm -rf /var/lib/apt/lists/*
+
+# Install runtime deps early for caching
+COPY ai-chatbot-framework/dockerfiles/nlu-requirements.txt /tmp/requirements.txt
+RUN pip install --upgrade pip && pip wheel -r /tmp/requirements.txt -w /wheels
+
+# Final stage
+FROM python:3.11-slim AS final
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    MODEL_DIR=/models \
+    SPACY_LANG_MODEL=xx_core_web_sm
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libstdc++6 libgomp1 && rm -rf /var/lib/apt/lists/*
+COPY --from=base /wheels /wheels
+RUN pip install --no-cache-dir /wheels/* && rm -rf /wheels
+
+# Copy app source
+COPY app /app/app
+
+# Optionally download small spaCy model at runtime if not mounted
+RUN python - <<'PY'
+import os, subprocess
+model=os.environ.get('SPACY_LANG_MODEL','xx_core_web_sm')
+try:
+    import spacy
+    spacy.load(model)
+except Exception:
+    try:
+        subprocess.check_call(['python','-m','spacy','download',model])
+    except Exception:
+        pass
+PY
+
+VOLUME ["/models"]
+EXPOSE 8001
+
+# Default to runtime api; can be overridden
+CMD ["uvicorn","nlu_service.api:app","--host","0.0.0.0","--port","8001"]
