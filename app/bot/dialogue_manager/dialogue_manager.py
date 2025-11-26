@@ -2,31 +2,35 @@ import json
 import logging
 from typing import Dict, List, Optional, Tuple
 from jinja2 import Template
-from app.admin.bots.store import get_bot
-from app.admin.intents.store import list_intents
+
+from app.admin.bots.store import BotRepository
+from app.admin.intents.store import IntentRepository
 from app.bot.memory import MemorySaver
-from app.bot.memory.memory_saver_mongo import MemorySaverMongo
-from app.bot.memory.models import State
 from app.bot.nlu.pipeline import NLUPipeline
-from app.bot.nlu.pipeline_utils import get_pipeline
 from app.bot.dialogue_manager.utils import SilentUndefined, split_sentence
 from app.bot.dialogue_manager.models import (
     IntentModel,
     ParameterModel,
     UserMessage,
 )
-from app.bot.dialogue_manager.http_client import call_api, APICallExcetion
-from app.config import app_config
-from app.database import client
+from app.bot.dialogue_manager.http_client import call_api, APICallException
 
 logger = logging.getLogger("dialogue_manager")
 
 
 class DialogueManagerException(Exception):
-    pass
+    """Generic exception raised by DialogueManager for operational failures."""
 
 
 class DialogueManager:
+    """Orchestrates NLU, state management and outbound API calls.
+
+    This class is dependency-injected: all external services (intent store,
+    bot store, memory backend and the NLU pipeline) must be supplied by the
+    caller. This design keeps the dialogue manager free of global database
+    clients and makes it suitable to run as a long-lived microservice.
+    """
+
     def __init__(
         self,
         memory_saver: MemorySaver,
@@ -34,38 +38,53 @@ class DialogueManager:
         nlu_pipeline: NLUPipeline,
         fallback_intent_id: str,
         intent_confidence_threshold: float,
-    ):
+    ) -> None:
         self.memory_saver = memory_saver
         self.nlu_pipeline = nlu_pipeline
-        self.intents = {
-            intent.intent_id: intent for intent in intents
-        }  # Map for faster lookup
+        self.intents = {intent.intent_id: intent for intent in intents}
         self.fallback_intent_id = fallback_intent_id
         self.confidence_threshold = intent_confidence_threshold
 
     @classmethod
-    async def from_config(cls):
-        """
-        Initialize DialogueManager with all required dependencies
-        """
+    async def from_config(
+        cls,
+        intent_repo: IntentRepository,
+        bot_repo: BotRepository,
+        memory_saver: MemorySaver,
+        nlu_pipeline: NLUPipeline,
+        *,
+        fallback_intent_id: str = "fallback",
+        bot_name: str = "default",
+    ) -> "DialogueManager":
+        """Factory to create a DialogueManager using injected repositories and
+        pre-built NLU pipeline.
 
-        # Load all intents and convert to domain models
-        db_intents = await list_intents()
+        Args:
+            intent_repo: repository providing list_intents().
+            bot_repo: repository providing bot configuration (get_bot).
+            memory_saver: MemorySaver implementation for state persistence.
+            nlu_pipeline: Pre-initialized NLUPipeline instance for inference.
+            fallback_intent_id: Name of the fallback intent to use when NLU is
+                uncertain. This value is provided by higher-level config.
+            bot_name: Bot identifier to load per-bot configuration (defaults
+                to 'default').
+
+        Returns:
+            DialogueManager instance wired with the provided dependencies.
+        """
+        # Load all intents and convert to domain models via the injected repo
+        db_intents = await intent_repo.list_intents()
         intents = [IntentModel.from_db(intent) for intent in db_intents]
 
-        # Initialize pipeline with components
-        nlu_pipeline = await get_pipeline()
-
-        # Get configuration
-        fallback_intent_id = app_config.DEFAULT_FALLBACK_INTENT_NAME
-
-        # Get bot configuration
-        bot = await get_bot("default")
-        confidence_threshold = (
-            bot.nlu_config.traditional_settings.intent_detection_threshold
-        )
-
-        memory_saver = MemorySaverMongo(client)
+        # Obtain bot configuration to read intent detection threshold
+        bot = await bot_repo.get_bot(bot_name)
+        try:
+            confidence_threshold = (
+                bot.nlu_config.traditional_settings.intent_detection_threshold
+            )
+        except Exception:
+            # Fallback to a conservative default if the bot record is missing
+            confidence_threshold = 0.5
 
         return cls(
             memory_saver,
@@ -75,24 +94,24 @@ class DialogueManager:
             confidence_threshold,
         )
 
-    def update_model(self, models_dir):
+    def update_model(self, models_dir: str) -> None:
         """
-        Signal hook to be called after training is completed.
-        Reloads ML models and synonyms.
+        Signal hook to be called after training is completed. Reloads ML models
+        and synonyms using the injected NLUPipeline instance.
         """
-        # Load models
         ok = self.nlu_pipeline.load(models_dir)
         if not ok:
+            # Keep a consistent state: mark pipeline as unavailable
             self.nlu_pipeline = None
         logger.info("NLU Pipeline models updated")
 
-    async def process(self, message: UserMessage) -> State:
+    async def process(self, message: UserMessage) -> "State":
         """
-        Single entry point to process the user message.
-
-        :param message: UserMessage instance containing the request data.
-        :return: current state of the conversation including the bot response
+        Single entry point to process the user message and return the
+        conversation state. The memory backend and NLU pipeline are injected
+        and used for persistence and inference respectively.
         """
+        from app.bot.memory.models import State
 
         if self.nlu_pipeline is None:
             raise DialogueManagerException(
@@ -168,7 +187,7 @@ class DialogueManager:
             raise
 
     def _get_intent_id_and_confidence(
-        self, current_state: State, nlu_result: Dict
+        self, current_state: "State", nlu_result: Dict
     ) -> Tuple[str, float]:
         """
         Determine the intent ID and confidence based on the request input.
@@ -187,7 +206,7 @@ class DialogueManager:
 
     def _get_intent(self, intent_id: str) -> Optional[IntentModel]:
         """
-        Retrieve the intent object by its ID.
+        Retrieve the intent object by its ID from the in-memory intent map.
         """
         return self.intents.get(intent_id)
 
@@ -201,11 +220,11 @@ class DialogueManager:
         self,
         query_intent: IntentModel,
         active_intent: IntentModel,
-        current_state: State,
-    ) -> Tuple[State, IntentModel]:
+        current_state: "State",
+    ) -> Tuple["State", IntentModel]:
         """
-        Process the intent and update the result model
-        with extracted parameters and other details.
+        Process the intent and update the result model with extracted
+        parameters and other details.
         """
         # cancel intent should cancel active intent and reset chat model
         if query_intent.intent_id == "cancel":
@@ -269,8 +288,8 @@ class DialogueManager:
         return current_state, active_intent
 
     def _handle_missing_parameters(
-        self, parameters: List[ParameterModel], current_state: State
-    ) -> State:
+        self, parameters: List[ParameterModel], current_state: "State"
+    ) -> "State":
         """
         Handle missing parameters in the result model.
 
@@ -302,8 +321,8 @@ class DialogueManager:
         return current_state
 
     async def _handle_api_trigger(
-        self, intent: IntentModel, current_state: State
-    ) -> State:
+        self, intent: IntentModel, current_state: "State"
+    ) -> "State":
         """
         Handle API trigger if the intent requires it.
         """
@@ -345,7 +364,7 @@ class DialogueManager:
             ]
         return current_state
 
-    async def _call_intent_api(self, intent: IntentModel, current_state: State):
+    async def _call_intent_api(self, intent: IntentModel, current_state: "State"):
         """
         Call the API associated with the intent.
         """
@@ -375,6 +394,6 @@ class DialogueManager:
                 parameters,
                 api_details.is_json,
             )
-        except APICallExcetion as e:
+        except APICallException as e:
             logger.warning(f"API call failed: {e}")
             raise DialogueManagerException("API call failed")

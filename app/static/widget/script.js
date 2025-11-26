@@ -1,4 +1,18 @@
 (() => {
+  /*
+    Chat widget script
+
+    Configuration (optional):
+      window.iky_widget_config = { backendUrl: 'https://api.example.com/path' }
+    Backwards-compatible fallbacks (in order):
+      window.iky_widget_config.backendUrl
+      window.iky_backend_url
+      window.iky_base_url + '/bots/channels/rest/webbook' (legacy)
+
+    This refactor removes unsafe innerHTML usage for dynamic content and parameterizes the
+    backend URL so the widget can target a serverless API Gateway/Lambda when available.
+  */
+
   const styles = `
     .iky-chat-widget {
       position: fixed;
@@ -89,6 +103,8 @@
       font-size: 14px;
       line-height: 1.4;
       animation: messageSlideIn 0.3s ease;
+      word-break: break-word;
+      white-space: pre-wrap;
     }
 
     .iky-message.bot {
@@ -213,6 +229,41 @@
       this.initChat();
     }
 
+    /**
+     * Determine the backend URL for the widget in a backwards-compatible way.
+     * Priority:
+     *   1) window.iky_widget_config.backendUrl
+     *   2) window.iky_backend_url
+     *   3) legacy: window.iky_base_url + '/bots/channels/rest/webbook'
+     */
+    getBackendUrl() {
+      try {
+        if (window.iky_widget_config && typeof window.iky_widget_config.backendUrl === 'string') {
+          return window.iky_widget_config.backendUrl;
+        }
+        if (typeof window.iky_backend_url === 'string' && window.iky_backend_url.length) {
+          return window.iky_backend_url;
+        }
+        if (typeof window.iky_base_url === 'string' && window.iky_base_url.length) {
+          return `${window.iky_base_url}/bots/channels/rest/webbook`;
+        }
+      } catch (e) {
+        // ignore and fall back
+      }
+      // As a final fallback, return same-origin relative path used historically
+      return '/bots/channels/rest/webbook';
+    }
+
+    createSVG(pathD, viewBox = '0 0 24 24') {
+      const svgNS = 'http://www.w3.org/2000/svg';
+      const svg = document.createElementNS(svgNS, 'svg');
+      svg.setAttribute('viewBox', viewBox);
+      const path = document.createElementNS(svgNS, 'path');
+      path.setAttribute('d', pathD);
+      svg.appendChild(path);
+      return svg;
+    }
+
     createElements() {
       // Add styles
       const styleSheet = document.createElement('style');
@@ -226,36 +277,60 @@
       // Create chat button
       this.button = document.createElement('div');
       this.button.className = 'iky-chat-button';
-      this.button.innerHTML = '<svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/></svg>';
+      // Create svg icon safely
+      const buttonSvg = this.createSVG('M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z');
+      this.button.appendChild(buttonSvg);
 
-      // Create chat window
+      // Create chat window structure without using innerHTML
       this.window = document.createElement('div');
       this.window.className = 'iky-chat-window';
-      this.window.innerHTML = `
-        <div class="iky-chat-header">
-          <h2 class="iky-chat-title">Chat with us</h2>
-          <p class="iky-chat-subtitle">You are talking to an AI chatbot</p>
-        </div>
-        <div class="iky-chat-messages"></div>
-        <div class="iky-chat-input">
-          <form class="iky-input-form">
-            <input type="text" class="iky-input-field" placeholder="Type your message...">
-            <button type="submit" class="iky-send-button">
-              <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-            </button>
-          </form>
-        </div>
-      `;
+
+      // Header
+      const header = document.createElement('div');
+      header.className = 'iky-chat-header';
+      const title = document.createElement('h2');
+      title.className = 'iky-chat-title';
+      title.textContent = 'Chat with us';
+      const subtitle = document.createElement('p');
+      subtitle.className = 'iky-chat-subtitle';
+      subtitle.textContent = 'You are talking to an AI chatbot';
+      header.appendChild(title);
+      header.appendChild(subtitle);
+
+      // Messages container
+      this.messages = document.createElement('div');
+      this.messages.className = 'iky-chat-messages';
+
+      // Input area
+      const inputArea = document.createElement('div');
+      inputArea.className = 'iky-chat-input';
+      this.form = document.createElement('form');
+      this.form.className = 'iky-input-form';
+
+      this.input = document.createElement('input');
+      this.input.type = 'text';
+      this.input.className = 'iky-input-field';
+      this.input.placeholder = 'Type your message...';
+
+      this.sendButton = document.createElement('button');
+      this.sendButton.type = 'submit';
+      this.sendButton.className = 'iky-send-button';
+      const sendSvg = this.createSVG('M2.01 21L23 12 2.01 3 2 10l15 2-15 2z');
+      this.sendButton.appendChild(sendSvg);
+
+      this.form.appendChild(this.input);
+      this.form.appendChild(this.sendButton);
+      inputArea.appendChild(this.form);
+
+      // Assemble
+      this.window.appendChild(header);
+      this.window.appendChild(this.messages);
+      this.window.appendChild(inputArea);
 
       // Append elements
       this.container.appendChild(this.window);
       this.container.appendChild(this.button);
       document.body.appendChild(this.container);
-
-      // Store references to elements
-      this.messages = this.window.querySelector('.iky-chat-messages');
-      this.form = this.window.querySelector('.iky-input-form');
-      this.input = this.window.querySelector('.iky-input-field');
     }
 
     attachEventListeners() {
@@ -281,10 +356,25 @@
       }
     }
 
+    /**
+     * Safely set textual content, preserving newlines by inserting <br> nodes.
+     * This avoids using innerHTML and prevents XSS.
+     */
+    setSafeText(parent, text) {
+      // Clear existing content
+      while (parent.firstChild) parent.removeChild(parent.firstChild);
+      if (text === undefined || text === null) return;
+      const parts = String(text).split('\n');
+      parts.forEach((part, idx) => {
+        parent.appendChild(document.createTextNode(part));
+        if (idx < parts.length - 1) parent.appendChild(document.createElement('br'));
+      });
+    }
+
     addMessage(content, isUser = false) {
       const message = document.createElement('div');
       message.className = `iky-message ${isUser ? 'user' : 'bot'}`;
-      message.innerHTML = content; // Changed from textContent to innerHTML to render HTML content
+      this.setSafeText(message, content);
       this.messages.appendChild(message);
       this.scrollToBottom();
     }
@@ -295,11 +385,12 @@
 
       const typing = document.createElement('div');
       typing.className = 'iky-typing';
-      typing.innerHTML = `
-        <div class="iky-typing-dot"></div>
-        <div class="iky-typing-dot"></div>
-        <div class="iky-typing-dot"></div>
-      `;
+      // Create dots without innerHTML
+      for (let i = 0; i < 3; i++) {
+        const dot = document.createElement('div');
+        dot.className = 'iky-typing-dot';
+        typing.appendChild(dot);
+      }
       this.messages.appendChild(typing);
       this.scrollToBottom();
     }
@@ -325,7 +416,8 @@
 
     async initChat() {
       try {
-        const response = await fetch(`${window.iky_base_url}/bots/channels/rest/webbook`, {
+        const url = this.getBackendUrl();
+        const response = await fetch(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -340,11 +432,11 @@
         if (Array.isArray(data)) {
           data.forEach((response, index) => {
             setTimeout(() => {
-              this.addMessage(response.text);
+              this.addMessage(response && response.text ? response.text : String(response));
             }, index * 500);
           });
         } else if (data) {
-          this.addMessage(data.text);
+          this.addMessage(data.text || String(data));
         }
       } catch (error) {
         console.error('Error initializing chat:', error);
@@ -360,7 +452,8 @@
       this.showTyping();
 
       try {
-        const response = await fetch(`${window.iky_base_url}/bots/channels/rest/webbook`, {
+        const url = this.getBackendUrl();
+        const response = await fetch(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -381,11 +474,11 @@
         if (Array.isArray(data)) {
           data.forEach((response, index) => {
             setTimeout(() => {
-              this.addMessage(response.text);
+              this.addMessage(response && response.text ? response.text : String(response));
             }, index * 500);
           });
         } else if (data) {
-          this.addMessage(data.text);
+          this.addMessage(data.text || String(data));
         }
       } catch (error) {
         console.error('Error sending message:', error);

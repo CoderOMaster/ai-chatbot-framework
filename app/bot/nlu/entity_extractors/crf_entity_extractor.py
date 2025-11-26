@@ -1,8 +1,18 @@
-import pycrfsuite
 import logging
-from typing import Dict, Any, List
-from app.bot.nlu.pipeline import NLUComponent
 import os
+import tempfile
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
+
+import pycrfsuite
+
+from app.bot.nlu.pipeline import (
+    NLUComponent,
+    ModelPath,
+    ModelStorage,
+    MessageDict,
+    TrainingData,
+)
 
 MODEL_NAME = "crf_entity_extractor.model"
 logger = logging.getLogger(__name__)
@@ -10,19 +20,22 @@ logger = logging.getLogger(__name__)
 
 class CRFEntityExtractor(NLUComponent):
     """
-    Performs NER training, prediction, model import/export
+    CRF based entity extractor.
+
+    This component separates training and inference responsibilities. The
+    train() and load() APIs accept a ModelPath (either a filesystem path or a
+    ModelStorage implementation) and never assume the process working
+    directory. When a storage backend is provided, training will write the
+    model to a temporary file and then persist the bytes via the storage
+    abstraction. Similarly, loading will download bytes from storage to a
+    temporary file before opening the CRF tagger.
     """
 
-    def __init__(self):
-        self.tagger = None
+    def __init__(self) -> None:
+        self.tagger: Optional[pycrfsuite.Tagger] = None
 
-    def extract_features(self, sent, i):
-        """
-        Extract features for a given sentence
-        :param sent:
-        :param i:
-        :return:
-        """
+    def extract_features(self, sent: List[Any], i: int) -> List[str]:
+        """Extract token features for position i in sent."""
         word = sent[i][0]
         postag = sent[i][1]
         features = [
@@ -68,28 +81,26 @@ class CRFEntityExtractor(NLUComponent):
 
         return features
 
-    def sent_to_features(self, sent):
-        """
-        Extract features from training Data
-        :param sent:
-        :return:
-        """
+    def sent_to_features(self, sent: List[Any]) -> List[List[str]]:
+        """Convert a tokenized sentence to a list of feature lists."""
         return [self.extract_features(sent, i) for i in range(len(sent))]
 
-    def sent_to_labels(self, sent):
-        """
-        Extract labels from training data
-        :param sent:
-        :return:
-        """
+    def sent_to_labels(self, sent: List[Any]) -> List[str]:
+        """Extract BIO labels from a tokenized, labeled sentence."""
         return [label for token, postag, label in sent]
 
-    def train(self, training_data: List[Dict[str, Any]], model_path: str) -> None:
-        """Train the component with given training data and save to model_path."""
+    def train(self, training_data: TrainingData, model_path: ModelPath) -> None:
+        """
+        Train a CRF model from training_data and persist it to model_path.
+
+        model_path may be either a filesystem directory (str / os.PathLike) or
+        an object implementing the ModelStorage protocol. When given a
+        ModelStorage implementation, the model is first trained to a temporary
+        file and then the resulting bytes are saved via ModelStorage.save_bytes.
+        """
         # Convert training data to CRF format
         ner_training_data = self.json2crf(training_data)
 
-        # Train using existing logic
         features = [self.sent_to_features(s) for s in ner_training_data]
         labels = [self.sent_to_labels(s) for s in ner_training_data]
 
@@ -99,38 +110,76 @@ class CRFEntityExtractor(NLUComponent):
 
         trainer.set_params(
             {
-                "c1": 1.0,  # coefficient for L1 penalty
-                "c2": 1e-3,  # coefficient for L2 penalty
-                "max_iterations": 50,  # stop earlier
-                # include transitions that are possible, but not observed
+                "c1": 1.0,
+                "c2": 1e-3,
+                "max_iterations": 50,
                 "feature.possible_transitions": True,
             }
         )
-        path = os.path.join(model_path, MODEL_NAME)
-        trainer.train(path)
 
-    def load(self, model_path: str) -> bool:
+        # Filesystem path: ensure directory and train directly to file
+        if isinstance(model_path, (str, os.PathLike)):
+            model_path_str = str(model_path)
+            output_path = os.path.join(model_path_str, MODEL_NAME)
+            parent = os.path.dirname(output_path)
+            if parent:
+                Path(parent).mkdir(parents=True, exist_ok=True)
+            trainer.train(output_path)
+            logger.info("CRF model trained and saved to %s", output_path)
+            return
+
+        # ModelStorage: train to a temporary file then save bytes via storage
+        storage: ModelStorage = model_path  # type: ignore
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            trainer.train(tmp_path)
+            with open(tmp_path, "rb") as f:
+                data = f.read()
+            storage.save_bytes(MODEL_NAME, data)
+            logger.info("CRF model trained and saved to ModelStorage as %s", MODEL_NAME)
+        finally:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+    def load(self, model_path: ModelPath) -> bool:
         """
-        Load the CRF model from the given path
-        :param model_path: Path to the model directory
-        :return: True if successful, False otherwise
+        Load CRF model from a filesystem path or ModelStorage. Returns True on
+        success, False otherwise.
         """
         try:
             self.tagger = pycrfsuite.Tagger()
-            path = os.path.join(model_path, MODEL_NAME)
-            self.tagger.open(path)
+
+            if isinstance(model_path, (str, os.PathLike)):
+                path = os.path.join(str(model_path), MODEL_NAME)
+                self.tagger.open(path)
+                logger.info("Loaded CRF model from %s", path)
+                return True
+
+            storage: ModelStorage = model_path  # type: ignore
+            data = storage.load_bytes(MODEL_NAME)
+            with tempfile.NamedTemporaryFile(delete=False) as tmp:
+                tmp.write(data)
+                tmp_path = tmp.name
+            try:
+                self.tagger.open(tmp_path)
+            finally:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            logger.info("Loaded CRF model from ModelStorage (%s)", MODEL_NAME)
             return True
         except Exception as e:
-            logger.error(f"Error loading CRF model: {e}")
+            logger.error("Error loading CRF model: %s", e)
+            self.tagger = None
             return False
 
-    def crf2json(self, tagged_sentence):
-        """
-        Extract label-value pair from NER prediction output
-        :param tagged_sentence:
-        :return:
-        """
-        labeled = {}
+    def crf2json(self, tagged_sentence: Any) -> Dict[str, str]:
+        """Convert a tagged sentence (word, BIO) into a dict of label->value."""
+        labeled: Dict[str, str] = {}
         labels = set()
         for s, tp in tagged_sentence:
             if tp != "O":
@@ -142,82 +191,69 @@ class CRFEntityExtractor(NLUComponent):
                     labeled[label] += " %s" % s
         return labeled
 
-    def extract_ner_labels(self, predicted_labels):
-        """
-        Extract name of labels from NER
-        :param predicted_labels:
-        :return:
-        """
-        labels = []
+    def extract_ner_labels(self, predicted_labels: List[str]) -> List[str]:
+        """Return the entity type names present in predicted_labels."""
+        labels: List[str] = []
         for tp in predicted_labels:
             if tp != "O":
                 labels.append(tp[2:])
         return labels
 
-    def predict(self, message):
+    def predict(self, message: MessageDict) -> Dict[str, str]:
+        """Run inference on a message. Requires load() to have been called.
+
+        Returns a mapping of label -> extracted text.
         """
-        Predict NER labels for given message
-        :param message:
-        :return:
-        """
+        if not self.tagger:
+            raise RuntimeError("CRF tagger is not loaded. Call load() before predict().")
+
         spacy_doc = message.get("spacy_doc")
+        if not spacy_doc:
+            return {}
+
         tagged_token = self.pos_tagger(spacy_doc)
         words = [token.text for token in spacy_doc]
         predicted_labels = self.tagger.tag(self.sent_to_features(tagged_token))
         return self.crf2json(zip(words, predicted_labels))
 
-    def pos_tagger(self, spacy_doc):
-        """
-        perform POS tagging on a given sentence
-        :param sentence:
-        :return:
-        """
-        tagged_sentence = []
+    def pos_tagger(self, spacy_doc: Any) -> List[List[str]]:
+        """Return a list of (text, tag) pairs for tokens in a spacy doc."""
+        tagged_sentence: List[List[str]] = []
         for token in spacy_doc:
             tagged_sentence.append((token.text, token.tag_))
         return tagged_sentence
 
-    def pos_tag_and_label(self, spacy_doc):
-        """
-        Perform POS tagging and BIO labeling on given sentence
-        :param spacy_doc:
-        :return:
-        """
+    def pos_tag_and_label(self, spacy_doc: Any) -> List[List[str]]:
+        """Return token/tag pairs with a default BIO label 'O'."""
         tagged_sentence = self.pos_tagger(spacy_doc)
-        tagged_sentence_json = []
+        tagged_sentence_json: List[List[str]] = []
         for token, postag in tagged_sentence:
             tagged_sentence_json.append([token, postag, "O"])
         return tagged_sentence_json
 
-    def json2crf(self, training_data):
+    def json2crf(self, training_data: TrainingData) -> List[List[List[str]]]:
         """
-        Takes JSON annotated data and
-        converts it to CRFSuite training data representation.
-        :param training_data: List of training examples with annotated entities.
-        :return: List of tokenized, POS-tagged, and BIO-labeled sentences.
+        Convert training examples with spacy docs and entity annotations into
+        CRFSuite training format: a list of sentences, each sentence being a
+        list of [token, postag, BIO] entries.
         """
-        labeled_examples = []
+        labeled_examples: List[List[List[str]]] = []
 
         for example in training_data:
             spacy_doc = example.get("spacy_doc")
             if not spacy_doc:
-                continue  # Skip if spacy_doc is None or empty
+                continue
 
-            # Initialize tokens with POS tagging and default BIO label as 'O'
             tagged_example = self.pos_tag_and_label(spacy_doc)
 
-            # Process entities in the example
             for entity in example.get("entities", []):
                 begin_char = entity.get("begin")
                 end_char = entity.get("end")
                 entity_name = entity.get("name")
 
-                # Use char_span to map entity character offsets to token spans
                 span = spacy_doc.char_span(begin_char, end_char)
                 if not span:
-                    # Skip if the span cannot be resolved (e.g., partial tokens)
                     continue
-                # BIO tagging for the resolved token span
                 for i, token in enumerate(span):
                     token_index = token.i
                     if 0 <= token_index < len(tagged_example):
@@ -227,15 +263,20 @@ class CRFEntityExtractor(NLUComponent):
                             bio = f"I-{entity_name}"
                         tagged_example[token_index][2] = bio
 
-            # Append the fully labeled example
             labeled_examples.append(tagged_example)
         return labeled_examples
 
-    def process(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        """Process a message and return the extracted information."""
+    def process(self, message: MessageDict) -> MessageDict:
+        """Process a message and attach extracted entities if possible."""
         if not message.get("text") or not message.get("spacy_doc"):
             return message
 
-        entities = self.predict(message)
+        try:
+            entities = self.predict(message)
+        except RuntimeError:
+            # Model not loaded; do not perform inference in online path
+            logger.debug("CRF model not loaded; skipping NER prediction.")
+            return message
+
         message["entities"] = entities
         return message
