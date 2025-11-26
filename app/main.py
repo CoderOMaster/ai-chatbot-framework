@@ -1,69 +1,75 @@
+"""
+Dialogue Manager Microservice Entry Point
+
+This is the main entry point for the dialogue manager microservice.
+It handles core dialogue processing and state management.
+Admin APIs, Chat APIs, and webhook handlers are deployed as separate Lambda functions.
+"""
+
 from contextlib import asynccontextmanager
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi import FastAPI, APIRouter
+
 from app.database import client as database_client
 from app.dependencies import init_dialogue_manager
 
-from app.admin.bots.routes import router as bots_router
-from app.admin.entities.routes import router as entities_router
-from app.admin.intents.routes import router as intents_router
-from app.admin.train.routes import router as train_router
-from app.admin.test.routes import router as test_router
-from app.admin.integrations.routes import router as integrations_router
-from app.admin.chatlogs.routes import router as chatlogs_router
-
-
-from app.bot.channels.rest.routes import router as rest_router
-from app.bot.channels.facebook.routes import router as facebook_router
-
 
 @asynccontextmanager
-async def lifespan(_):
+async def lifespan(_: FastAPI):
+    """
+    Manage application lifecycle: startup and shutdown.
+    
+    Initializes dialogue manager on startup and closes database connections on shutdown.
+    """
     await init_dialogue_manager()
     yield
     database_client.close()
 
 
-app = FastAPI(title="AI Chatbot Framework", lifespan=lifespan)
+def create_app() -> FastAPI:
+    """
+    Create and configure the FastAPI application.
+    
+    Returns:
+        FastAPI: Configured application instance for dialogue manager microservice.
+    """
+    app = FastAPI(
+        title="Dialogue Manager Microservice",
+        description="Core dialogue processing and state management service",
+        version="1.0.0",
+        lifespan=lifespan,
+    )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+    # Configure CORS for internal service-to-service communication
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # Restrict in production to specific service IPs
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
+    # Health check endpoints
+    @app.get("/health")
+    async def health_check():
+        """Kubernetes/ECS health check endpoint."""
+        return {"status": "healthy", "service": "dialogue-manager"}
 
+    @app.get("/ready")
+    async def readiness_check():
+        """Readiness probe for deployment orchestration."""
+        return {"status": "ready", "service": "dialogue-manager"}
 
-@app.get("/ready")
-async def ready():
-    return {"status": "ok"}
+    @app.get("/")
+    async def root():
+        """Root endpoint."""
+        return {
+            "message": "Dialogue Manager Microservice",
+            "service": "dialogue-manager",
+        }
 
-
-@app.get("/")
-async def root():
-    return {"message": "Welcome to AI Chatbot Framework API"}
-
-
-# admin apis
-admin_router = APIRouter(prefix="/admin")
-admin_router.include_router(bots_router)
-admin_router.include_router(intents_router)
-admin_router.include_router(entities_router)
-admin_router.include_router(train_router)
-admin_router.include_router(test_router)
-admin_router.include_router(integrations_router)
-admin_router.include_router(chatlogs_router)
-
-
-app.include_router(admin_router)
-
-bot_router = APIRouter(prefix="/bots/channels", tags=["channels"])
-bot_router.include_router(rest_router, tags=["rest"])
-bot_router.include_router(facebook_router, tags=["facebook"])
+    return app
 
 
-app.include_router(bot_router)
+# Application instance for ASGI servers (Uvicorn, Gunicorn)
+app = create_app()

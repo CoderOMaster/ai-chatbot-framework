@@ -1,21 +1,19 @@
-from fastapi import APIRouter, Depends, HTTPException
-from app.bot.dialogue_manager.models import UserMessage
-from app.dependencies import get_dialogue_manager
-from app.bot.dialogue_manager.dialogue_manager import (
-    DialogueManager,
-    DialogueManagerException,
-)
+import httpx
+from fastapi import APIRouter, HTTPException
+from shared.models.dialogue import UserMessage
+from shared.exceptions import DialogueManagerException
 
 router = APIRouter(prefix="/test", tags=["test"])
 
+# Dialogue manager service endpoint
+DIALOGUE_MANAGER_SERVICE_URL = "http://dialogue-manager-service"
+
 
 @router.post("/chat")
-async def chat(
-    body: dict, dialogue_manager: DialogueManager = Depends(get_dialogue_manager)
-):
+async def chat(body: dict):
     """
     Endpoint to converse with the chatbot.
-    Delegates the request processing to DialogueManager.
+    Delegates the request processing to DialogueManager service via HTTP.
 
     :return: JSON response with the chatbot's reply and context.
     """
@@ -23,8 +21,16 @@ async def chat(
     user_message = UserMessage(
         thread_id=body["thread_id"], text=body["text"], context=body["context"]
     )
+    
     try:
-        new_state = await dialogue_manager.process(user_message)
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{DIALOGUE_MANAGER_SERVICE_URL}/process",
+                json=user_message.dict(),
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except DialogueManagerException as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return new_state.to_dict()

@@ -1,32 +1,39 @@
 import json
 import logging
+import time
 from typing import Dict, List, Optional, Tuple
 from jinja2 import Template
-from app.admin.bots.store import get_bot
-from app.admin.intents.store import list_intents
-from app.bot.memory import MemorySaver
-from app.bot.memory.memory_saver_mongo import MemorySaverMongo
-from app.bot.memory.models import State
-from app.bot.nlu.pipeline import NLUPipeline
-from app.bot.nlu.pipeline_utils import get_pipeline
-from app.bot.dialogue_manager.utils import SilentUndefined, split_sentence
-from app.bot.dialogue_manager.models import (
-    IntentModel,
-    ParameterModel,
-    UserMessage,
-)
-from app.bot.dialogue_manager.http_client import call_api, APICallExcetion
-from app.config import app_config
-from app.database import client
+from shared.memory import MemorySaver
+from shared.models.memory import State
+from shared.nlu.pipeline import NLUPipeline
+from shared.utils import SilentUndefined, split_sentence
+from shared.models.dialogue import IntentModel, ParameterModel, UserMessage
+from shared.utils.http_client import call_api, APICallException
+from shared.config import app_config
+from shared.database import client
+from shared.utils.circuit_breaker import CircuitBreaker
+from shared.metrics import metrics
 
 logger = logging.getLogger("dialogue_manager")
 
+# Configuration constants
+DEFAULT_CONVERSATION_TIMEOUT_SECONDS = 3600  # 1 hour
+DEFAULT_API_CALL_TIMEOUT_SECONDS = 30
+CIRCUIT_BREAKER_FAILURE_THRESHOLD = 5
+CIRCUIT_BREAKER_RECOVERY_TIMEOUT = 60
+
 
 class DialogueManagerException(Exception):
+    """Exception raised for dialogue manager errors."""
     pass
 
 
 class DialogueManager:
+    """
+    Core dialogue manager microservice that orchestrates NLU processing,
+    state management, and API triggers for conversational interactions.
+    """
+
     def __init__(
         self,
         memory_saver: MemorySaver,
@@ -34,7 +41,21 @@ class DialogueManager:
         nlu_pipeline: NLUPipeline,
         fallback_intent_id: str,
         intent_confidence_threshold: float,
+        conversation_timeout_seconds: int = DEFAULT_CONVERSATION_TIMEOUT_SECONDS,
+        api_call_timeout_seconds: int = DEFAULT_API_CALL_TIMEOUT_SECONDS,
     ):
+        """
+        Initialize DialogueManager with dependency injection.
+
+        Args:
+            memory_saver: Instance for persisting conversation state
+            intents: List of available intents
+            nlu_pipeline: NLU pipeline for intent and entity extraction
+            fallback_intent_id: Intent ID to use when confidence is low
+            intent_confidence_threshold: Minimum confidence for intent acceptance
+            conversation_timeout_seconds: Timeout for inactive conversations
+            api_call_timeout_seconds: Timeout for external API calls
+        """
         self.memory_saver = memory_saver
         self.nlu_pipeline = nlu_pipeline
         self.intents = {
@@ -42,75 +63,113 @@ class DialogueManager:
         }  # Map for faster lookup
         self.fallback_intent_id = fallback_intent_id
         self.confidence_threshold = intent_confidence_threshold
+        self.conversation_timeout_seconds = conversation_timeout_seconds
+        self.api_call_timeout_seconds = api_call_timeout_seconds
+
+        # Initialize circuit breaker for API calls
+        self.api_circuit_breaker = CircuitBreaker(
+            failure_threshold=CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+            recovery_timeout=CIRCUIT_BREAKER_RECOVERY_TIMEOUT,
+        )
 
     @classmethod
-    async def from_config(cls):
+    async def from_config(
+        cls,
+        memory_saver: MemorySaver,
+        intents: List[IntentModel],
+        nlu_pipeline: NLUPipeline,
+        fallback_intent_id: Optional[str] = None,
+        intent_confidence_threshold: Optional[float] = None,
+    ):
         """
-        Initialize DialogueManager with all required dependencies
+        Factory method to initialize DialogueManager with configuration.
+
+        Args:
+            memory_saver: Injected memory saver instance
+            intents: Injected list of intents
+            nlu_pipeline: Injected NLU pipeline instance
+            fallback_intent_id: Optional override for fallback intent ID
+            intent_confidence_threshold: Optional override for confidence threshold
+
+        Returns:
+            Configured DialogueManager instance
         """
-
-        # Load all intents and convert to domain models
-        db_intents = await list_intents()
-        intents = [IntentModel.from_db(intent) for intent in db_intents]
-
-        # Initialize pipeline with components
-        nlu_pipeline = await get_pipeline()
-
-        # Get configuration
-        fallback_intent_id = app_config.DEFAULT_FALLBACK_INTENT_NAME
-
-        # Get bot configuration
-        bot = await get_bot("default")
+        # Use provided values or fall back to config
+        fallback_id = fallback_intent_id or app_config.DEFAULT_FALLBACK_INTENT_NAME
         confidence_threshold = (
-            bot.nlu_config.traditional_settings.intent_detection_threshold
+            intent_confidence_threshold
+            or app_config.INTENT_DETECTION_THRESHOLD
         )
-
-        memory_saver = MemorySaverMongo(client)
 
         return cls(
-            memory_saver,
-            intents,
-            nlu_pipeline,
-            fallback_intent_id,
-            confidence_threshold,
+            memory_saver=memory_saver,
+            intents=intents,
+            nlu_pipeline=nlu_pipeline,
+            fallback_intent_id=fallback_id,
+            intent_confidence_threshold=confidence_threshold,
         )
 
-    def update_model(self, models_dir):
+    def update_model(self, models_dir: str) -> None:
         """
         Signal hook to be called after training is completed.
         Reloads ML models and synonyms.
+
+        Args:
+            models_dir: Directory containing trained models
         """
-        # Load models
-        ok = self.nlu_pipeline.load(models_dir)
-        if not ok:
-            self.nlu_pipeline = None
-        logger.info("NLU Pipeline models updated")
+        try:
+            ok = self.nlu_pipeline.load(models_dir)
+            if not ok:
+                logger.error("Failed to load NLU pipeline models")
+                self.nlu_pipeline = None
+            else:
+                logger.info("NLU Pipeline models updated successfully")
+                metrics.increment("dialogue_manager.model_update.success")
+        except Exception as e:
+            logger.error(f"Error updating NLU pipeline models: {e}", exc_info=True)
+            metrics.increment("dialogue_manager.model_update.failure")
+            raise
 
     async def process(self, message: UserMessage) -> State:
         """
         Single entry point to process the user message.
 
-        :param message: UserMessage instance containing the request data.
-        :return: current state of the conversation including the bot response
+        Args:
+            message: UserMessage instance containing the request data
+
+        Returns:
+            Current state of the conversation including the bot response
+
+        Raises:
+            DialogueManagerException: If NLU pipeline is not initialized or processing fails
         """
+        start_time = time.time()
 
         if self.nlu_pipeline is None:
             raise DialogueManagerException(
                 "NLU pipeline is not initialized. Please build the models."
             )
 
-        # Step 1: Get current state
-        current_state = await self.memory_saver.get(message.thread_id)
-
-        if not current_state:
-            logger.debug(
-                f"No current state found for thread_id: {message.thread_id}, creating new state"
-            )
-            current_state = await self.memory_saver.init_state(message.thread_id)
-
-        current_state.update(message)
-
         try:
+            # Step 1: Get current state
+            current_state = await self.memory_saver.get(message.thread_id)
+
+            if not current_state:
+                logger.debug(
+                    f"No current state found for thread_id: {message.thread_id}, creating new state"
+                )
+                current_state = await self.memory_saver.init_state(message.thread_id)
+            else:
+                # Check conversation timeout
+                if self._is_conversation_expired(current_state):
+                    logger.info(
+                        f"Conversation expired for thread_id: {message.thread_id}, resetting state"
+                    )
+                    current_state = await self.memory_saver.init_state(message.thread_id)
+                    metrics.increment("dialogue_manager.conversation_timeout")
+
+            current_state.update(message)
+
             # Step 2: Process through NLU pipeline
             nlu_result = self.nlu_pipeline.process(
                 {"text": current_state.user_message.text}
@@ -161,17 +220,46 @@ class DialogueManager:
             # Step 7: Save the state
             await self.memory_saver.save(message.thread_id, current_state)
 
+            # Record metrics
+            processing_time = time.time() - start_time
+            metrics.timing("dialogue_manager.process_time", processing_time)
+            metrics.increment("dialogue_manager.process.success")
+
             return current_state
 
         except Exception as e:
             logger.error(f"Error processing request: {e}", exc_info=True)
+            metrics.increment("dialogue_manager.process.failure")
             raise
+
+    def _is_conversation_expired(self, state: State) -> bool:
+        """
+        Check if conversation has exceeded timeout threshold.
+
+        Args:
+            state: Current conversation state
+
+        Returns:
+            True if conversation has expired, False otherwise
+        """
+        if not hasattr(state, "last_updated_at") or state.last_updated_at is None:
+            return False
+
+        elapsed_seconds = time.time() - state.last_updated_at
+        return elapsed_seconds > self.conversation_timeout_seconds
 
     def _get_intent_id_and_confidence(
         self, current_state: State, nlu_result: Dict
     ) -> Tuple[str, float]:
         """
         Determine the intent ID and confidence based on the request input.
+
+        Args:
+            current_state: Current conversation state
+            nlu_result: Result from NLU pipeline
+
+        Returns:
+            Tuple of (intent_id, confidence_score)
         """
         input_text = current_state.user_message.text
         if input_text.startswith("/"):
@@ -188,14 +276,31 @@ class DialogueManager:
     def _get_intent(self, intent_id: str) -> Optional[IntentModel]:
         """
         Retrieve the intent object by its ID.
+
+        Args:
+            intent_id: ID of the intent to retrieve
+
+        Returns:
+            IntentModel instance or None if not found
         """
         return self.intents.get(intent_id)
 
     def _get_fallback_intent(self) -> IntentModel:
         """
         Retrieve the fallback intent.
+
+        Returns:
+            IntentModel instance for fallback intent
+
+        Raises:
+            DialogueManagerException: If fallback intent is not configured
         """
-        return self.intents[self.fallback_intent_id]
+        fallback = self.intents.get(self.fallback_intent_id)
+        if fallback is None:
+            raise DialogueManagerException(
+                f"Fallback intent '{self.fallback_intent_id}' not found"
+            )
+        return fallback
 
     def _process_intent(
         self,
@@ -206,6 +311,14 @@ class DialogueManager:
         """
         Process the intent and update the result model
         with extracted parameters and other details.
+
+        Args:
+            query_intent: Intent identified from user input
+            active_intent: Currently active intent in conversation
+            current_state: Current conversation state
+
+        Returns:
+            Tuple of (updated_state, active_intent)
         """
         # cancel intent should cancel active intent and reset chat model
         if query_intent.intent_id == "cancel":
@@ -274,9 +387,12 @@ class DialogueManager:
         """
         Handle missing parameters in the result model.
 
-        :param parameters: List of parameters from the intent.
-        :param chat_model_response: The ChatModel instance to be updated.
-        :return: Updated ChatModel instance.
+        Args:
+            parameters: List of parameters from the intent
+            current_state: Current conversation state
+
+        Returns:
+            Updated conversation state
         """
         missing_parameters = []
         current_state.missing_parameters = []
@@ -306,6 +422,13 @@ class DialogueManager:
     ) -> State:
         """
         Handle API trigger if the intent requires it.
+
+        Args:
+            intent: Intent with potential API trigger
+            current_state: Current conversation state
+
+        Returns:
+            Updated conversation state with bot response
         """
         if intent.api_trigger and intent.api_details:
             try:
@@ -324,12 +447,14 @@ class DialogueManager:
                 current_state.bot_message = [
                     {"text": msg} for msg in split_sentence(rendered_text)
                 ]
+                metrics.increment("dialogue_manager.api_trigger.success")
 
             except DialogueManagerException as e:
                 logger.warning(f"API call failed: {e}")
                 current_state.bot_message = [
                     {"text": "Service is not available. Please try again later."}
                 ]
+                metrics.increment("dialogue_manager.api_trigger.failure")
         else:
             template = Template(
                 intent.speech_response,
@@ -345,16 +470,33 @@ class DialogueManager:
             ]
         return current_state
 
-    async def _call_intent_api(self, intent: IntentModel, current_state: State):
+    async def _call_intent_api(
+        self, intent: IntentModel, current_state: State
+    ) -> Dict:
         """
-        Call the API associated with the intent.
+        Call the API associated with the intent with circuit breaker protection.
+
+        Args:
+            intent: Intent with API configuration
+            current_state: Current conversation state
+
+        Returns:
+            API response as dictionary
+
+        Raises:
+            DialogueManagerException: If API call fails or circuit breaker is open
         """
+        if self.api_circuit_breaker.is_open():
+            logger.error("API circuit breaker is open, rejecting API call")
+            raise DialogueManagerException("API service temporarily unavailable")
+
         api_details = intent.api_details
         headers = api_details.get_headers()
         url_template = Template(api_details.url, undefined=SilentUndefined)
         rendered_url = url_template.render(
             context=current_state.context, parameters=current_state.extracted_parameters
         )
+
         if api_details.is_json:
             request_template = Template(
                 api_details.json_data, undefined=SilentUndefined
@@ -368,13 +510,17 @@ class DialogueManager:
             parameters = current_state.extracted_parameters
 
         try:
-            return await call_api(
+            result = await call_api(
                 rendered_url,
                 api_details.request_type,
                 headers,
                 parameters,
                 api_details.is_json,
+                timeout=self.api_call_timeout_seconds,
             )
-        except APICallExcetion as e:
+            self.api_circuit_breaker.record_success()
+            return result
+        except APICallException as e:
             logger.warning(f"API call failed: {e}")
+            self.api_circuit_breaker.record_failure()
             raise DialogueManagerException("API call failed")

@@ -1,15 +1,15 @@
 import pytest
 from unittest.mock import Mock, patch, AsyncMock
-from app.bot.dialogue_manager.dialogue_manager import DialogueManager
-from app.bot.dialogue_manager.models import (
+from shared.dialogue_manager import DialogueManager
+from shared.models.dialogue import (
     IntentModel,
     ParameterModel,
     ApiDetailsModel,
     UserMessage,
 )
-from app.bot.memory import MemorySaver
-from app.bot.memory.models import State
-from app.bot.nlu.pipeline import NLUPipeline
+from shared.memory import MemorySaver
+from shared.models.memory import State
+from shared.nlu.pipeline import NLUPipeline
 
 
 @pytest.fixture
@@ -273,7 +273,7 @@ class TestDialogueManager:
 
         # Mock API call
         with patch(
-            "app.bot.dialogue_manager.dialogue_manager.call_api", new_callable=AsyncMock
+            "shared.dialogue_manager.call_api", new_callable=AsyncMock
         ) as mock_call_api:
             mock_call_api.return_value = {"status": "success"}
 
@@ -352,7 +352,7 @@ class TestDialogueManager:
         message = UserMessage(text="pepperoni", context={}, thread_id="user2")
 
         with patch(
-            "app.bot.dialogue_manager.dialogue_manager.call_api", new_callable=AsyncMock
+            "shared.dialogue_manager.call_api", new_callable=AsyncMock
         ) as mock_call_api:
             mock_call_api.return_value = {"status": "success"}
 

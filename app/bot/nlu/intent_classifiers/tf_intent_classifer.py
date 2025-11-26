@@ -1,16 +1,15 @@
 import os
 import time
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
 import cloudpickle
 import numpy as np
 import spacy
 import tensorflow as tf
 from sklearn.preprocessing import LabelBinarizer
-from tensorflow.python.keras import Sequential
-from tensorflow.python.layers.core import Dense
-from tensorflow.python.layers.core import Dropout
-from app.bot.nlu.pipeline import NLUComponent
+from tensorflow.keras import Sequential
+from tensorflow.keras.layers import Dense, Dropout
+from shared.nlu.pipeline import NLUComponent
 
 np.random.seed(1)
 
@@ -18,23 +17,64 @@ logger = logging.getLogger(__name__)
 
 
 class TfIntentClassifier(NLUComponent):
-    """TensorFlow-based intent classifier that implements NLUComponent interface."""
+    """TensorFlow-based intent classifier that implements NLUComponent interface.
+    
+    This classifier uses TensorFlow 2.x with Keras API for intent classification.
+    Supports GPU acceleration when available. Designed for deployment as a
+    microservice with configurable resource constraints.
+    """
 
     INTENT_RANKING_LENGTH = 3
     MODEL_NAME = "tf_intent_model.hd5"
     LABELS_NAME = "labels.pkl"
 
-    def __init__(self):
-        self.model = None
+    def __init__(self, use_gpu: bool = True) -> None:
+        """Initialize the TensorFlow intent classifier.
+        
+        Args:
+            use_gpu: Enable GPU support if available. Defaults to True.
+        """
+        self.model: tf.keras.Model = None
         self.nlp = spacy.load("en")
         self.label_encoder = LabelBinarizer()
-        self.graph = None
+        self.use_gpu = use_gpu
+        self._configure_gpu()
+
+    def _configure_gpu(self) -> None:
+        """Configure GPU support for TensorFlow 2.x.
+        
+        Sets memory growth to avoid OOM errors and logs GPU availability.
+        """
+        if not self.use_gpu:
+            tf.config.set_visible_devices([], 'GPU')
+            logger.info("GPU disabled for TensorFlow")
+            return
+
+        gpus = tf.config.list_physical_devices('GPU')
+        if gpus:
+            try:
+                for gpu in gpus:
+                    tf.config.experimental.set_memory_growth(gpu, True)
+                logger.info(f"GPU support enabled: {len(gpus)} GPU(s) detected")
+            except RuntimeError as e:
+                logger.warning(f"GPU configuration failed: {e}")
+        else:
+            logger.info("No GPU detected, using CPU")
 
     def train(self, training_data: List[Dict[str, Any]], model_path: str) -> None:
-        """Train intent classifier for given training data"""
+        """Train intent classifier for given training data.
+        
+        Args:
+            training_data: List of training examples with 'text' and 'intent' keys.
+            model_path: Directory path to save trained model and labels.
+        """
 
-        def create_model():
-            """Define and return tensorflow model."""
+        def create_model() -> tf.keras.Model:
+            """Define and return TensorFlow 2.x Keras model.
+            
+            Returns:
+                Compiled Sequential model for intent classification.
+            """
             model = Sequential()
             model.add(Dense(256, activation=tf.nn.relu, input_shape=(vocab_size,)))
             model.add(Dropout(0.2))
@@ -70,7 +110,8 @@ class TfIntentClassifier(NLUComponent):
         self.label_encoder.fit(y)
         y_train = self.label_encoder.transform(y)
 
-        del self.model
+        if self.model is not None:
+            del self.model
         tf.keras.backend.clear_session()
         time.sleep(3)
 
@@ -91,15 +132,22 @@ class TfIntentClassifier(NLUComponent):
             logger.info(f"Labels written out to {labels_file}")
 
     def load(self, model_path: str) -> bool:
-        """Load trained model from given path"""
+        """Load trained model from given path.
+        
+        Args:
+            model_path: Directory path containing saved model and labels.
+            
+        Returns:
+            True if model loaded successfully, False otherwise.
+        """
         try:
-            del self.model
+            if self.model is not None:
+                del self.model
             tf.keras.backend.clear_session()
 
             # Load model
             model_file = os.path.join(model_path, self.MODEL_NAME)
             self.model = tf.keras.models.load_model(model_file, compile=True)
-            self.graph = tf.get_default_graph()
             logger.info("TF model loaded")
 
             # Load label encoder
@@ -113,17 +161,29 @@ class TfIntentClassifier(NLUComponent):
             logger.error(f"Error loading model: {e}")
             return False
 
-    def predict_proba(self, message: Dict[str, Any]):
+    def predict_proba(self, message: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
         """Given a message, predict most probable label.
-        Returns tuple of sorted indices and probabilities."""
+        
+        Args:
+            message: Dictionary containing 'text' key with input message.
+            
+        Returns:
+            Tuple of (sorted_indices, probabilities) arrays.
+        """
         x_predict = [self.nlp(message.get("text")).vector]
-        with self.graph.as_default():
-            pred_result = self.model.predict(np.array([x_predict[0]]))
+        pred_result = self.model.predict(np.array([x_predict[0]]))
         sorted_indices = np.fliplr(np.argsort(pred_result, axis=1))
         return sorted_indices, pred_result[:, sorted_indices]
 
     def process(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        """Process a message and return the extracted information."""
+        """Process a message and return the extracted information.
+        
+        Args:
+            message: Input message dictionary with 'text' key.
+            
+        Returns:
+            Message dictionary with added 'intent' and 'intent_ranking' keys.
+        """
         if not message.get("text"):
             return message
 
