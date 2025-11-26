@@ -1,27 +1,28 @@
-from fastapi import APIRouter
-from typing import Optional
+from fastapi import APIRouter, HTTPException
+from typing import List, Optional
 from datetime import datetime
-import app.admin.chatlogs.store as store
+from app.admin.chatlogs.store import list_chatlogs, get_chat_thread
+from shared.models.chatlogs import ChatLog, ChatLogResponse
 
 router = APIRouter(prefix="/chatlogs", tags=["chatlogs"])
 
 
-@router.get("/")
-async def list_chatlogs(
+@router.get("/", response_model=ChatLogResponse)
+async def list_chatlogs_handler(
     page: int = 1,
     limit: int = 10,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
-):
+) -> ChatLogResponse:
     """Get paginated chat conversation history with optional date filtering"""
-    return await store.list_chatlogs(page, limit, start_date, end_date)
+    return await list_chatlogs(page, limit, start_date, end_date)
 
 
-@router.get("/{thread_id}")
-async def get_chat_thread(thread_id: str):
+@router.get("/{thread_id}", response_model=List[ChatLog])
+async def get_chat_thread_handler(thread_id: str) -> List[ChatLog]:
     """Get complete conversation history for a specific thread"""
-    conversation = await store.get_chat_thread(thread_id)
+    conversation = await get_chat_thread(thread_id)
     if not conversation:
-        return {"error": "Conversation not found"}
+        raise HTTPException(status_code=404, detail="Conversation not found")
 
     return conversation

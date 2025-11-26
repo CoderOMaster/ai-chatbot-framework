@@ -1,6 +1,7 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
+from typing import Optional
 from app.admin.entities import store
-from app.admin.entities.schemas import Entity
+from shared.models.entities import Entity
 
 router = APIRouter(prefix="/entities", tags=["entities"])
 
@@ -14,9 +15,18 @@ async def create_entity(entity: Entity):
 
 
 @router.get("/")
-async def read_entities():
-    """Get all entities"""
-    return await store.list_entities()
+async def read_entities(
+    skip: int = Query(0, ge=0, description="Number of items to skip"),
+    limit: int = Query(10, ge=1, le=100, description="Number of items to return"),
+):
+    """Get all entities with pagination support"""
+    entities = await store.list_entities(skip=skip, limit=limit)
+    return {
+        "items": entities,
+        "skip": skip,
+        "limit": limit,
+        "total": len(entities),
+    }
 
 
 @router.get("/{entity_id}")

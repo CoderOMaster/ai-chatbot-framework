@@ -198,8 +198,18 @@
     }
   `;
 
+  /**
+   * ChatWidget - Client-side chat widget with XSS protection and retry logic
+   */
   class ChatWidget {
-    constructor() {
+    constructor(config = {}) {
+      // Configuration with defaults
+      this.config = {
+        apiUrl: config.apiUrl || window.iky_base_url || 'https://api.example.com',
+        maxRetries: config.maxRetries || 3,
+        retryDelay: config.retryDelay || 1000,
+      };
+
       this.isOpen = false;
       this.isTyping = false;
       this.currentState = {
@@ -213,6 +223,20 @@
       this.initChat();
     }
 
+    /**
+     * Sanitize HTML content to prevent XSS attacks
+     * @param {string} content - Raw content to sanitize
+     * @returns {string} Sanitized text content
+     */
+    sanitizeContent(content) {
+      const div = document.createElement('div');
+      div.textContent = content;
+      return div.innerHTML;
+    }
+
+    /**
+     * Create DOM elements for the chat widget
+     */
     createElements() {
       // Add styles
       const styleSheet = document.createElement('style');
@@ -258,6 +282,9 @@
       this.input = this.window.querySelector('.iky-input-field');
     }
 
+    /**
+     * Attach event listeners to interactive elements
+     */
     attachEventListeners() {
       // Toggle chat window
       this.button.addEventListener('click', () => this.toggleChat());
@@ -273,6 +300,9 @@
       });
     }
 
+    /**
+     * Toggle chat window open/closed state
+     */
     toggleChat() {
       this.isOpen = !this.isOpen;
       this.window.classList.toggle('open', this.isOpen);
@@ -281,14 +311,22 @@
       }
     }
 
+    /**
+     * Add a message to the chat window (XSS-safe)
+     * @param {string} content - Message content
+     * @param {boolean} isUser - Whether message is from user
+     */
     addMessage(content, isUser = false) {
       const message = document.createElement('div');
       message.className = `iky-message ${isUser ? 'user' : 'bot'}`;
-      message.innerHTML = content; // Changed from textContent to innerHTML to render HTML content
+      message.textContent = content;
       this.messages.appendChild(message);
       this.scrollToBottom();
     }
 
+    /**
+     * Show typing indicator
+     */
     showTyping() {
       if (this.isTyping) return;
       this.isTyping = true;
@@ -304,6 +342,9 @@
       this.scrollToBottom();
     }
 
+    /**
+     * Hide typing indicator
+     */
     hideTyping() {
       this.isTyping = false;
       const typing = this.messages.querySelector('.iky-typing');
@@ -312,38 +353,74 @@
       }
     }
 
+    /**
+     * Scroll messages container to bottom
+     */
     scrollToBottom() {
       this.messages.scrollTop = this.messages.scrollHeight;
     }
 
+    /**
+     * Generate a UUID v4
+     * @returns {string} UUID string
+     */
     uuid() {
       return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-          var r = Math.random()*16|0, v = c == 'x' ? r : (r&0x3|0x8);
+          const r = Math.random() * 16 | 0;
+          const v = c === 'x' ? r : (r & 0x3 | 0x8);
           return v.toString(16);
       });
     }
 
-    async initChat() {
+    /**
+     * Make API request with retry logic
+     * @param {string} endpoint - API endpoint path
+     * @param {object} payload - Request payload
+     * @param {number} retryCount - Current retry attempt
+     * @returns {Promise<object>} API response data
+     */
+    async fetchWithRetry(endpoint, payload, retryCount = 0) {
       try {
-        const response = await fetch(`${window.iky_base_url}/bots/channels/rest/webbook`, {
+        const url = `${this.config.apiUrl}${endpoint}`;
+        const response = await fetch(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify(this.currentState),
+          body: JSON.stringify(payload),
         });
 
-        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        return await response.json();
+      } catch (error) {
+        if (retryCount < this.config.maxRetries) {
+          const delay = this.config.retryDelay * Math.pow(2, retryCount);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          return this.fetchWithRetry(endpoint, payload, retryCount + 1);
+        }
+        throw error;
+      }
+    }
+
+    /**
+     * Initialize chat with bot
+     */
+    async initChat() {
+      try {
+        const data = await this.fetchWithRetry('/chat-api/bots/channels/rest/webhook', this.currentState);
         this.response = { ...data };
 
         // Add bot response(s)
         if (Array.isArray(data)) {
           data.forEach((response, index) => {
             setTimeout(() => {
-              this.addMessage(response.text);
+              this.addMessage(response.text || '');
             }, index * 500);
           });
-        } else if (data) {
+        } else if (data && data.text) {
           this.addMessage(data.text);
         }
       } catch (error) {
@@ -352,26 +429,23 @@
       }
     }
 
+    /**
+     * Send user message and get bot response
+     * @param {string} message - User message text
+     */
     async sendMessage(message) {
-      // Add user message
+      // Add user message (XSS-safe)
       this.addMessage(message, true);
 
       // Show typing indicator
       this.showTyping();
 
       try {
-        const response = await fetch(`${window.iky_base_url}/bots/channels/rest/webbook`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            ...this.currentState,
-            text: message
-          }),
+        const data = await this.fetchWithRetry('/chat-api/bots/channels/rest/webhook', {
+          ...this.currentState,
+          text: message
         });
 
-        const data = await response.json();
         this.response = { ...data };
 
         // Hide typing indicator
@@ -381,10 +455,10 @@
         if (Array.isArray(data)) {
           data.forEach((response, index) => {
             setTimeout(() => {
-              this.addMessage(response.text);
+              this.addMessage(response.text || '');
             }, index * 500);
           });
-        } else if (data) {
+        } else if (data && data.text) {
           this.addMessage(data.text);
         }
       } catch (error) {
@@ -395,8 +469,15 @@
     }
   }
 
-  // Initialize widget
+  /**
+   * Initialize widget when DOM is ready
+   */
   window.addEventListener('load', () => {
-    new ChatWidget();
+    const config = {
+      apiUrl: window.iky_api_url || window.iky_base_url || 'https://api.example.com',
+      maxRetries: window.iky_max_retries || 3,
+      retryDelay: window.iky_retry_delay || 1000,
+    };
+    new ChatWidget(config);
   });
 })();

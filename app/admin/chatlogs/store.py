@@ -1,18 +1,63 @@
 from typing import List, Optional
 from datetime import datetime
-from app.database import client
-from .schemas import ChatLog, ChatLogResponse, ChatThreadInfo
+from shared.database import client
+from shared.models.chatlogs import ChatLog, ChatLogResponse, ChatThreadInfo
 
 # Initialize MongoDB collection
 collection = client["chatbot"]["state"]
 
+# Pagination limits
+MAX_PAGE_SIZE = 100
+DEFAULT_PAGE_SIZE = 10
+
+
+def _validate_date_range(
+    start_date: Optional[datetime] = None, end_date: Optional[datetime] = None
+) -> None:
+    """Validate date range parameters.
+    
+    Args:
+        start_date: Optional start date for filtering
+        end_date: Optional end date for filtering
+        
+    Raises:
+        ValueError: If end_date is before start_date
+    """
+    if start_date and end_date and end_date < start_date:
+        raise ValueError("end_date must be greater than or equal to start_date")
+
 
 async def list_chatlogs(
     page: int = 1,
-    limit: int = 10,
+    limit: int = DEFAULT_PAGE_SIZE,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
 ) -> ChatLogResponse:
+    """List chat logs with pagination and optional date range filtering.
+    
+    Args:
+        page: Page number (1-indexed)
+        limit: Number of results per page (max 100)
+        start_date: Optional start date for filtering
+        end_date: Optional end date for filtering
+        
+    Returns:
+        ChatLogResponse with paginated results
+        
+    Raises:
+        ValueError: If date range is invalid or limit exceeds maximum
+    """
+    # Validate pagination limit
+    if limit > MAX_PAGE_SIZE:
+        raise ValueError(f"limit cannot exceed {MAX_PAGE_SIZE}")
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    if page < 1:
+        raise ValueError("page must be at least 1")
+    
+    # Validate date range
+    _validate_date_range(start_date, end_date)
+    
     skip = (page - 1) * limit
 
     # Build query filter
@@ -25,6 +70,7 @@ async def list_chatlogs(
             query["date"]["$lte"] = end_date
 
     # Get total count of unique threads for pagination
+    # Index hint: thread_id, date
     pipeline = [
         {"$match": query},
         {"$group": {"_id": "$thread_id"}},
@@ -34,6 +80,7 @@ async def list_chatlogs(
     total = result[0]["total"] if result else 0
 
     # Get paginated results grouped by thread_id with latest date
+    # Index hint: date (descending), thread_id
     pipeline = [
         {"$match": query},
         {"$sort": {"date": -1}},
@@ -60,9 +107,16 @@ async def list_chatlogs(
     )
 
 
-async def get_chat_thread(thread_id: str) -> List[ChatLog]:
-    """Get complete conversation history for a specific thread"""
-
+async def get_chat_thread(thread_id: str) -> Optional[List[ChatLog]]:
+    """Get complete conversation history for a specific thread.
+    
+    Args:
+        thread_id: The thread identifier to retrieve
+        
+    Returns:
+        List of ChatLog entries for the thread, or None if not found
+    """
+    # Index hint: thread_id, date (ascending)
     cursor = collection.find({"thread_id": thread_id}).sort("date", 1)
     messages = await cursor.to_list(length=None)
 

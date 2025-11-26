@@ -1,7 +1,7 @@
 from typing import List
 from fastapi import APIRouter, HTTPException
+from shared.models.integrations import Integration, IntegrationUpdate
 from . import store
-from .schemas import Integration, IntegrationUpdate
 
 router = APIRouter(prefix="/integrations", tags=["integrations"])
 
