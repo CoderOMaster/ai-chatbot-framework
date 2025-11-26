@@ -1,3 +1,3 @@
-from .sklearn_intent_classifer import SklearnIntentClassifier
+from .sklearn_intent_classifier import SklearnIntentClassifier
 
 __all__ = ["SklearnIntentClassifier"]

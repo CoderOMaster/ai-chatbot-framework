@@ -17,6 +17,7 @@ def from_envvar():
     Get configuration instance from environment variables.
     
     This function provides backward compatibility with the old configuration API.
+    Reads only environment-based settings, not runtime state.
     
     Returns:
         Settings: Configured Settings instance

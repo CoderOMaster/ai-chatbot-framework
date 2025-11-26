@@ -1,0 +1,37 @@
+# Multi-stage Dockerfile for NLU Training Worker, Dialogue Manager, and Legacy FastAPI Backend
+# Shared Python backend image with spaCy, CRF, sklearn, and LLM dependencies
+
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install system build tools required for spaCy, CRF, sklearn compilation
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc \
+    g++ \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Create models directory for NLU artifacts
+RUN mkdir -p /app/models
+
+# Set environment variables for NLU training
+ENV PYTHONUNBUFFERED=1
+ENV NLU_TRAINING_LOG_LEVEL=INFO
+
+# Default entrypoint for NLU training worker
+# Can be overridden for dialogue-manager or legacy-fastapi-backend services
+ENTRYPOINT ["python", "-m", "app.bot.nlu.pipeline_utils", "train"]
+CMD ["--training-type", "traditional", "--bot-id", "default"]
