@@ -89,6 +89,8 @@
       font-size: 14px;
       line-height: 1.4;
       animation: messageSlideIn 0.3s ease;
+      word-wrap: break-word;
+      overflow-wrap: break-word;
     }
 
     .iky-message.bot {
@@ -198,10 +200,45 @@
     }
   `;
 
+  /**
+   * Escapes HTML special characters to prevent XSS attacks.
+   * @param {string} text - The text to escape
+   * @returns {string} Escaped text safe for DOM insertion
+   */
+  function escapeHtml(text) {
+    const map = {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#039;'
+    };
+    return String(text).replace(/[&<>"']/g, (char) => map[char]);
+  }
+
+  /**
+   * Gets the base URL for API calls from data-attribute or window config.
+   * @returns {string} The base URL for the API endpoint
+   */
+  function getBaseUrl() {
+    // Check for data-attribute on script tag
+    const scriptTag = document.currentScript || document.querySelector('script[data-iky-base-url]');
+    if (scriptTag && scriptTag.dataset.ikyBaseUrl) {
+      return scriptTag.dataset.ikyBaseUrl;
+    }
+    // Check for window config
+    if (window.iky_base_url) {
+      return window.iky_base_url;
+    }
+    // Default fallback
+    return window.location.origin;
+  }
+
   class ChatWidget {
     constructor() {
       this.isOpen = false;
       this.isTyping = false;
+      this.baseUrl = getBaseUrl();
       this.currentState = {
         thread_id: this.uuid(),
         text: "/init_conversation",
@@ -223,39 +260,67 @@
       this.container = document.createElement('div');
       this.container.className = 'iky-chat-widget';
 
-      // Create chat button
+      // Create chat button with SVG icon
       this.button = document.createElement('div');
       this.button.className = 'iky-chat-button';
-      this.button.innerHTML = '<svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/></svg>';
+      const buttonSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      buttonSvg.setAttribute('viewBox', '0 0 24 24');
+      const buttonPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      buttonPath.setAttribute('d', 'M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z');
+      buttonSvg.appendChild(buttonPath);
+      this.button.appendChild(buttonSvg);
 
       // Create chat window
       this.window = document.createElement('div');
       this.window.className = 'iky-chat-window';
-      this.window.innerHTML = `
-        <div class="iky-chat-header">
-          <h2 class="iky-chat-title">Chat with us</h2>
-          <p class="iky-chat-subtitle">You are talking to an AI chatbot</p>
-        </div>
-        <div class="iky-chat-messages"></div>
-        <div class="iky-chat-input">
-          <form class="iky-input-form">
-            <input type="text" class="iky-input-field" placeholder="Type your message...">
-            <button type="submit" class="iky-send-button">
-              <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-            </button>
-          </form>
-        </div>
-      `;
 
-      // Append elements
+      // Header
+      const header = document.createElement('div');
+      header.className = 'iky-chat-header';
+      const title = document.createElement('h2');
+      title.className = 'iky-chat-title';
+      title.textContent = 'Chat with us';
+      const subtitle = document.createElement('p');
+      subtitle.className = 'iky-chat-subtitle';
+      subtitle.textContent = 'You are talking to an AI chatbot';
+      header.appendChild(title);
+      header.appendChild(subtitle);
+
+      // Messages container
+      this.messages = document.createElement('div');
+      this.messages.className = 'iky-chat-messages';
+
+      // Input section
+      const inputSection = document.createElement('div');
+      inputSection.className = 'iky-chat-input';
+      this.form = document.createElement('form');
+      this.form.className = 'iky-input-form';
+      this.input = document.createElement('input');
+      this.input.type = 'text';
+      this.input.className = 'iky-input-field';
+      this.input.placeholder = 'Type your message...';
+      const sendButton = document.createElement('button');
+      sendButton.type = 'submit';
+      sendButton.className = 'iky-send-button';
+      const sendSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      sendSvg.setAttribute('viewBox', '0 0 24 24');
+      const sendPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      sendPath.setAttribute('d', 'M2.01 21L23 12 2.01 3 2 10l15 2-15 2z');
+      sendSvg.appendChild(sendPath);
+      sendButton.appendChild(sendSvg);
+      this.form.appendChild(this.input);
+      this.form.appendChild(sendButton);
+      inputSection.appendChild(this.form);
+
+      // Assemble window
+      this.window.appendChild(header);
+      this.window.appendChild(this.messages);
+      this.window.appendChild(inputSection);
+
+      // Append elements to DOM
       this.container.appendChild(this.window);
       this.container.appendChild(this.button);
       document.body.appendChild(this.container);
-
-      // Store references to elements
-      this.messages = this.window.querySelector('.iky-chat-messages');
-      this.form = this.window.querySelector('.iky-input-form');
-      this.input = this.window.querySelector('.iky-input-field');
     }
 
     attachEventListeners() {
@@ -281,10 +346,15 @@
       }
     }
 
+    /**
+     * Adds a message to the chat window with sanitized content.
+     * @param {string} content - The message text to display
+     * @param {boolean} isUser - Whether the message is from the user
+     */
     addMessage(content, isUser = false) {
       const message = document.createElement('div');
       message.className = `iky-message ${isUser ? 'user' : 'bot'}`;
-      message.innerHTML = content; // Changed from textContent to innerHTML to render HTML content
+      message.textContent = content;
       this.messages.appendChild(message);
       this.scrollToBottom();
     }
@@ -295,11 +365,11 @@
 
       const typing = document.createElement('div');
       typing.className = 'iky-typing';
-      typing.innerHTML = `
-        <div class="iky-typing-dot"></div>
-        <div class="iky-typing-dot"></div>
-        <div class="iky-typing-dot"></div>
-      `;
+      for (let i = 0; i < 3; i++) {
+        const dot = document.createElement('div');
+        dot.className = 'iky-typing-dot';
+        typing.appendChild(dot);
+      }
       this.messages.appendChild(typing);
       this.scrollToBottom();
     }
@@ -316,16 +386,24 @@
       this.messages.scrollTop = this.messages.scrollHeight;
     }
 
+    /**
+     * Generates a UUID v4 string.
+     * @returns {string} A UUID v4 string
+     */
     uuid() {
       return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-          var r = Math.random()*16|0, v = c == 'x' ? r : (r&0x3|0x8);
+          const r = Math.random() * 16 | 0;
+          const v = c === 'x' ? r : (r & 0x3 | 0x8);
           return v.toString(16);
       });
     }
 
+    /**
+     * Initializes the chat by sending the initial conversation message.
+     */
     async initChat() {
       try {
-        const response = await fetch(`${window.iky_base_url}/bots/channels/rest/webbook`, {
+        const response = await fetch(`${this.baseUrl}/bots/channels/rest/webbook`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -340,10 +418,10 @@
         if (Array.isArray(data)) {
           data.forEach((response, index) => {
             setTimeout(() => {
-              this.addMessage(response.text);
+              this.addMessage(response.text || '');
             }, index * 500);
           });
-        } else if (data) {
+        } else if (data && data.text) {
           this.addMessage(data.text);
         }
       } catch (error) {
@@ -352,15 +430,19 @@
       }
     }
 
+    /**
+     * Sends a user message and retrieves bot response.
+     * @param {string} message - The user message to send
+     */
     async sendMessage(message) {
-      // Add user message
+      // Add user message (sanitized via textContent)
       this.addMessage(message, true);
 
       // Show typing indicator
       this.showTyping();
 
       try {
-        const response = await fetch(`${window.iky_base_url}/bots/channels/rest/webbook`, {
+        const response = await fetch(`${this.baseUrl}/bots/channels/rest/webbook`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -381,10 +463,10 @@
         if (Array.isArray(data)) {
           data.forEach((response, index) => {
             setTimeout(() => {
-              this.addMessage(response.text);
+              this.addMessage(response.text || '');
             }, index * 500);
           });
-        } else if (data) {
+        } else if (data && data.text) {
           this.addMessage(data.text);
         }
       } catch (error) {
@@ -395,7 +477,7 @@
     }
   }
 
-  // Initialize widget
+  // Initialize widget when DOM is ready
   window.addEventListener('load', () => {
     new ChatWidget();
   });

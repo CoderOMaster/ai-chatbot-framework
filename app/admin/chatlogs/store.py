@@ -6,13 +6,39 @@ from .schemas import ChatLog, ChatLogResponse, ChatThreadInfo
 # Initialize MongoDB collection
 collection = client["chatbot"]["state"]
 
+# Default query parameters for efficient pagination
+DEFAULT_LIMIT = 10
+MAX_LIMIT = 100
+DEFAULT_PROJECTION = {"thread_id": 1, "date": 1, "user_message": 1, "bot_message": 1, "context": 1}
+
+
+async def ensure_indexes() -> None:
+    """Ensure required indexes exist for efficient querying."""
+    await collection.create_index("thread_id")
+    await collection.create_index("date")
+    await collection.create_index([("thread_id", 1), ("date", -1)])
+
 
 async def list_chatlogs(
     page: int = 1,
-    limit: int = 10,
+    limit: int = DEFAULT_LIMIT,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
 ) -> ChatLogResponse:
+    """
+    List chat threads with pagination and optional date filtering.
+    
+    Args:
+        page: Page number (1-indexed)
+        limit: Number of results per page (capped at MAX_LIMIT)
+        start_date: Optional start date filter
+        end_date: Optional end date filter
+    
+    Returns:
+        ChatLogResponse with paginated thread information
+    """
+    # Enforce limit constraints
+    limit = min(limit, MAX_LIMIT)
     skip = (page - 1) * limit
 
     # Build query filter
@@ -60,10 +86,27 @@ async def list_chatlogs(
     )
 
 
-async def get_chat_thread(thread_id: str) -> List[ChatLog]:
-    """Get complete conversation history for a specific thread"""
+async def get_chat_thread(
+    thread_id: str,
+    projection: Optional[dict] = None,
+) -> Optional[List[ChatLog]]:
+    """
+    Get complete conversation history for a specific thread.
+    
+    Args:
+        thread_id: The thread identifier
+        projection: Optional MongoDB projection dict to limit returned fields
+    
+    Returns:
+        List of ChatLog objects or None if thread not found
+    """
+    if projection is None:
+        projection = DEFAULT_PROJECTION
 
-    cursor = collection.find({"thread_id": thread_id}).sort("date", 1)
+    cursor = collection.find(
+        {"thread_id": thread_id},
+        projection=projection
+    ).sort("date", 1)
     messages = await cursor.to_list(length=None)
 
     if not messages:

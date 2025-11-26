@@ -1,11 +1,11 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Dict, List, Optional
 from datetime import datetime
 
 
 class ChatMessage(BaseModel):
     text: str
-    context: Optional[Dict] = {}
+    context: Optional[Dict] = Field(default_factory=dict)
 
 
 class ChatThreadInfo(BaseModel):
@@ -13,15 +13,15 @@ class ChatThreadInfo(BaseModel):
     date: datetime
 
 
-class BotNessage(BaseModel):
+class BotMessage(BaseModel):
     text: str
 
 
 class ChatLog(BaseModel):
     user_message: ChatMessage
-    bot_message: List[BotNessage]
+    bot_message: List[BotMessage]
     date: datetime
-    context: Optional[Dict] = {}
+    context: Optional[Dict] = Field(default_factory=dict)
 
 
 class ChatLogResponse(BaseModel):
