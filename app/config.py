@@ -1,3 +1,7 @@
-from config import from_envvar
+"""Application configuration module."""
+from app.config_loader import BaseConfig, load_config
 
-app_config = from_envvar()
+# Load configuration from environment
+settings: BaseConfig = load_config()
+
+__all__ = ["settings", "BaseConfig"]

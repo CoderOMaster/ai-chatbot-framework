@@ -1,47 +1,69 @@
-from collections import OrderedDict
 from typing import Text, Optional, List
 from app.bot.memory.models import State
 
 
 class MemorySaver:
     """
-    MemorySaver is an abstract class that defines the interface for a memory saver.
+    Abstract interface for memory persistence in distributed systems.
+    
+    Implementations should provide persistent storage backends suitable for
+    distributed environments (e.g., database, cache, message queue).
+    
+    Not recommended for in-memory implementations due to state loss in
+    multi-instance deployments.
     """
 
     async def init_state(self, thread_id: Text) -> State:
         """
-        Initialize a new state for a given thread_id
+        Initialize a new state for a given thread_id.
+        
+        Args:
+            thread_id: Unique identifier for the conversation thread
+            
+        Returns:
+            State: A new State instance with the given thread_id
         """
         return State(thread_id=thread_id)
 
     async def save(self, thread_id: Text, state: State):
         """
-        append the state to the memory for a given thread_id
+        Persist the state for a given thread_id.
+        
+        Args:
+            thread_id: Unique identifier for the conversation thread
+            state: State object to persist
+            
+        Raises:
+            NotImplementedError: Must be implemented by subclasses
         """
         raise NotImplementedError("save method not implemented")
 
     async def get(self, thread_id) -> Optional[State]:
+        """
+        Retrieve the most recent state for a given thread_id.
+        
+        Args:
+            thread_id: Unique identifier for the conversation thread
+            
+        Returns:
+            Optional[State]: The most recent state or None if not found
+            
+        Raises:
+            NotImplementedError: Must be implemented by subclasses
+        """
         raise NotImplementedError("get method not implemented")
 
     async def get_all(self, thread_id) -> List[State]:
+        """
+        Retrieve all states for a given thread_id.
+        
+        Args:
+            thread_id: Unique identifier for the conversation thread
+            
+        Returns:
+            List[State]: List of all states for the thread, empty list if none found
+            
+        Raises:
+            NotImplementedError: Must be implemented by subclasses
+        """
         raise NotImplementedError("get_all method not implemented")
-
-
-class MemorySaverInMemory(MemorySaver):
-    def __init__(self):
-        self.memory = OrderedDict()
-
-    async def save(self, thread_id: Text, state: State):
-        if thread_id not in self.memory:
-            self.memory[thread_id] = []
-        self.memory[thread_id].append(state)
-
-    async def get(self, thread_id) -> Optional[State]:
-        if thread_id not in self.memory:
-            return None
-        return self.memory.get(thread_id)[-1]
-
-    async def get_all(self, thread_id) -> List[State]:
-        if thread_id not in self.memory:
-            return []
-        return self.memory.get(thread_id)
