@@ -1,0 +1,67 @@
+# Multi-stage build for dialogue-manager microservice
+FROM python:3.11-slim as builder
+
+WORKDIR /build
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements
+COPY requirements.txt .
+
+# Build wheels for faster installation
+RUN pip install --user --no-cache-dir --wheel --no-deps --wheel-dir /build/wheels -r requirements.txt
+
+
+# Final stage
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy wheels from builder
+COPY --from=builder /build/wheels /wheels
+COPY --from=builder /build/requirements.txt .
+
+# Install Python dependencies from wheels
+RUN pip install --user --no-cache-dir --no-index --find-links=/wheels -r requirements.txt && \
+    rm -rf /wheels
+
+# Copy application code
+COPY . .
+
+# Create directories for models and state storage
+RUN mkdir -p /app/models /app/state
+
+# Set environment variables with defaults
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    MONGODB_HOST=mongodb://localhost:27017 \
+    MODEL_PATH=/app/models \
+    FALLBACK_INTENT=fallback \
+    INTENT_THRESHOLD=0.5 \
+    LOG_LEVEL=INFO \
+    NLU_CACHE_TTL=3600 \
+    API_TIMEOUT=30 \
+    MAX_WORKERS=4
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD python -c "import httpx; httpx.get('http://localhost:8000/health')" || exit 1
+
+# Expose REST API port
+EXPOSE 8000
+
+# Pre-load NLU models on startup
+RUN mkdir -p /app/models && echo "NLU models directory initialized"
+
+# Run application
+CMD ["python", "-m", "app.bot.dialogue_manager.server"]

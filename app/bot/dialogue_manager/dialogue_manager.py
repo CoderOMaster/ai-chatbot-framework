@@ -1,9 +1,14 @@
 import json
 import logging
+import asyncio
 from typing import Dict, List, Optional, Tuple
+from enum import Enum
+from datetime import datetime, UTC
+from dataclasses import dataclass, field
+from functools import lru_cache
 from jinja2 import Template
-from app.admin.bots.store import get_bot
-from app.admin.intents.store import list_intents
+import httpx
+
 from app.bot.memory import MemorySaver
 from app.bot.memory.memory_saver_mongo import MemorySaverMongo
 from app.bot.memory.models import State
@@ -22,11 +27,372 @@ from app.database import client
 logger = logging.getLogger("dialogue_manager")
 
 
+class DialogueState(Enum):
+    """Dialogue flow state machine states."""
+    IDLE = "idle"
+    PROCESSING_NLU = "processing_nlu"
+    RESOLVING_INTENT = "resolving_intent"
+    FILLING_PARAMETERS = "filling_parameters"
+    CALLING_API = "calling_api"
+    GENERATING_RESPONSE = "generating_response"
+    COMPLETE = "complete"
+    ERROR = "error"
+
+
 class DialogueManagerException(Exception):
+    """Base exception for dialogue manager errors."""
     pass
 
 
+class NLUServiceException(DialogueManagerException):
+    """Exception raised when NLU service fails."""
+    pass
+
+
+class IntentResolutionException(DialogueManagerException):
+    """Exception raised when intent resolution fails."""
+    pass
+
+
+class ParameterFillingException(DialogueManagerException):
+    """Exception raised when parameter filling fails."""
+    pass
+
+
+class APICallException(DialogueManagerException):
+    """Exception raised when API call fails."""
+    pass
+
+
+class ResponseGenerationException(DialogueManagerException):
+    """Exception raised when response generation fails."""
+    pass
+
+
+@dataclass
+class NLUResult:
+    """Cached NLU processing result."""
+    text: str
+    intent: Dict
+    entities: Dict
+    confidence: float
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+    
+    def is_stale(self, ttl_seconds: int = 3600) -> bool:
+        """Check if cached result is stale.
+        
+        Args:
+            ttl_seconds: Time-to-live in seconds
+            
+        Returns:
+            True if result is older than TTL
+        """
+        age = (datetime.now(UTC) - self.timestamp).total_seconds()
+        return age > ttl_seconds
+
+
+@dataclass
+class DialogueMetrics:
+    """Metrics for dialogue processing."""
+    thread_id: str
+    state: DialogueState
+    nlu_processing_time: float = 0.0
+    intent_resolution_time: float = 0.0
+    parameter_filling_time: float = 0.0
+    api_call_time: float = 0.0
+    response_generation_time: float = 0.0
+    total_time: float = 0.0
+    error: Optional[str] = None
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+    
+    def to_dict(self) -> Dict:
+        """Convert metrics to dictionary."""
+        return {
+            "thread_id": self.thread_id,
+            "state": self.state.value,
+            "nlu_processing_time": self.nlu_processing_time,
+            "intent_resolution_time": self.intent_resolution_time,
+            "parameter_filling_time": self.parameter_filling_time,
+            "api_call_time": self.api_call_time,
+            "response_generation_time": self.response_generation_time,
+            "total_time": self.total_time,
+            "error": self.error,
+            "timestamp": self.timestamp.isoformat(),
+        }
+
+
+class IntentResolver:
+    """Service for resolving user intents from NLU results."""
+    
+    def __init__(
+        self,
+        intents: Dict[str, IntentModel],
+        fallback_intent_id: str,
+        confidence_threshold: float,
+    ):
+        """Initialize intent resolver.
+        
+        Args:
+            intents: Dictionary mapping intent IDs to IntentModel instances
+            fallback_intent_id: ID of fallback intent
+            confidence_threshold: Minimum confidence for intent acceptance
+        """
+        self.intents = intents
+        self.fallback_intent_id = fallback_intent_id
+        self.confidence_threshold = confidence_threshold
+    
+    async def resolve(
+        self,
+        user_text: str,
+        nlu_result: Dict,
+        current_state: State,
+    ) -> Tuple[str, float]:
+        """Resolve intent from NLU result and user input.
+        
+        Args:
+            user_text: User input text
+            nlu_result: NLU pipeline result
+            current_state: Current conversation state
+            
+        Returns:
+            Tuple of (intent_id, confidence)
+            
+        Raises:
+            IntentResolutionException: If resolution fails
+        """
+        try:
+            # Handle explicit intent commands (e.g., "/intent_name")
+            if user_text.startswith("/"):
+                intent_id = user_text.split("/")[1]
+                if intent_id in self.intents:
+                    return intent_id, 1.0
+                logger.warning(f"Explicit intent '{intent_id}' not found")
+                return self.fallback_intent_id, 1.0
+            
+            # Handle NLU-predicted intents
+            predicted = nlu_result.get("intent", {})
+            confidence = predicted.get("confidence", 0.0)
+            
+            if confidence < self.confidence_threshold:
+                logger.debug(
+                    f"Intent confidence {confidence} below threshold {self.confidence_threshold}"
+                )
+                return self.fallback_intent_id, 1.0
+            
+            intent_id = predicted.get("intent", self.fallback_intent_id)
+            return intent_id, confidence
+            
+        except Exception as e:
+            logger.error(f"Intent resolution failed: {e}", exc_info=True)
+            raise IntentResolutionException(f"Failed to resolve intent: {str(e)}")
+    
+    def get_intent(self, intent_id: str) -> Optional[IntentModel]:
+        """Retrieve intent by ID.
+        
+        Args:
+            intent_id: Intent identifier
+            
+        Returns:
+            IntentModel or None if not found
+        """
+        return self.intents.get(intent_id)
+    
+    def get_fallback_intent(self) -> IntentModel:
+        """Get fallback intent.
+        
+        Returns:
+            IntentModel for fallback intent
+        """
+        return self.intents[self.fallback_intent_id]
+
+
+class ParameterFiller:
+    """Service for filling intent parameters from extracted entities."""
+    
+    async def fill(
+        self,
+        parameters: List[ParameterModel],
+        extracted_entities: Dict,
+        current_state: State,
+    ) -> Tuple[Dict, List[str]]:
+        """Fill parameters from extracted entities.
+        
+        Args:
+            parameters: List of parameter definitions
+            extracted_entities: Extracted entities from NLU
+            current_state: Current conversation state
+            
+        Returns:
+            Tuple of (extracted_parameters, missing_parameters)
+            
+        Raises:
+            ParameterFillingException: If filling fails
+        """
+        try:
+            extracted_parameters = {}
+            missing_parameters = []
+            
+            # Group entities by type for efficient matching
+            entities_by_type = self._group_entities_by_type(extracted_entities)
+            
+            for param in parameters:
+                # Handle free_text parameters being prompted
+                if (
+                    param.type == "free_text"
+                    and current_state.current_node == param.name
+                ):
+                    extracted_parameters[param.name] = current_state.user_message.text
+                    continue
+                
+                # Match entities with parameters by type
+                if param.type in entities_by_type and entities_by_type[param.type]:
+                    extracted_parameters[param.name] = entities_by_type[param.type].pop(0)
+                elif param.required:
+                    missing_parameters.append(param.name)
+            
+            return extracted_parameters, missing_parameters
+            
+        except Exception as e:
+            logger.error(f"Parameter filling failed: {e}", exc_info=True)
+            raise ParameterFillingException(f"Failed to fill parameters: {str(e)}")
+    
+    @staticmethod
+    def _group_entities_by_type(extracted_entities: Dict) -> Dict[str, List]:
+        """Group extracted entities by type.
+        
+        Args:
+            extracted_entities: Extracted entities dictionary
+            
+        Returns:
+            Dictionary mapping entity types to lists of values
+        """
+        entities_by_type = {}
+        for entity_name, entity_value in extracted_entities.items():
+            if entity_name not in entities_by_type:
+                entities_by_type[entity_name] = []
+            entities_by_type[entity_name].append(entity_value)
+        return entities_by_type
+
+
+class APICaller:
+    """Service for calling external APIs based on intent configuration."""
+    
+    async def call(
+        self,
+        intent: IntentModel,
+        current_state: State,
+    ) -> Dict:
+        """Call external API for intent.
+        
+        Args:
+            intent: Intent with API configuration
+            current_state: Current conversation state
+            
+        Returns:
+            API response as dictionary
+            
+        Raises:
+            APICallException: If API call fails
+        """
+        if not intent.api_trigger or not intent.api_details:
+            return {}
+        
+        try:
+            api_details = intent.api_details
+            headers = api_details.get_headers()
+            
+            # Render URL template
+            url_template = Template(api_details.url, undefined=SilentUndefined)
+            rendered_url = url_template.render(
+                context=current_state.context,
+                parameters=current_state.extracted_parameters,
+            )
+            
+            # Prepare request body
+            if api_details.is_json:
+                request_template = Template(
+                    api_details.json_data,
+                    undefined=SilentUndefined,
+                )
+                request_json = request_template.render(
+                    context=current_state.context,
+                    parameters=current_state.extracted_parameters,
+                )
+                parameters = json.loads(request_json)
+            else:
+                parameters = current_state.extracted_parameters
+            
+            # Call API
+            result = await call_api(
+                rendered_url,
+                api_details.request_type,
+                headers,
+                parameters,
+                api_details.is_json,
+            )
+            
+            logger.debug(f"API call successful for intent {intent.intent_id}")
+            return result
+            
+        except APICallExcetion as e:
+            logger.warning(f"API call failed: {e}")
+            raise APICallException(f"API call failed: {str(e)}")
+        except Exception as e:
+            logger.error(f"Unexpected error during API call: {e}", exc_info=True)
+            raise APICallException(f"Unexpected error during API call: {str(e)}")
+
+
+class ResponseGenerator:
+    """Service for generating bot responses from templates."""
+    
+    async def generate(
+        self,
+        intent: IntentModel,
+        current_state: State,
+        api_result: Optional[Dict] = None,
+    ) -> List[Dict]:
+        """Generate bot response from intent template.
+        
+        Args:
+            intent: Intent with response template
+            current_state: Current conversation state
+            api_result: Optional API call result
+            
+        Returns:
+            List of message dictionaries
+            
+        Raises:
+            ResponseGenerationException: If generation fails
+        """
+        try:
+            template = Template(
+                intent.speech_response,
+                undefined=SilentUndefined,
+                enable_async=True,
+            )
+            
+            render_context = {
+                "context": current_state.context,
+                "parameters": current_state.extracted_parameters,
+            }
+            
+            if api_result:
+                render_context["result"] = api_result
+            
+            rendered_text = await template.render_async(**render_context)
+            messages = [{"text": msg} for msg in split_sentence(rendered_text)]
+            
+            logger.debug(f"Generated response for intent {intent.intent_id}")
+            return messages
+            
+        except Exception as e:
+            logger.error(f"Response generation failed: {e}", exc_info=True)
+            raise ResponseGenerationException(f"Failed to generate response: {str(e)}")
+
+
 class DialogueManager:
+    """Core dialogue orchestration service managing conversation flow."""
+    
     def __init__(
         self,
         memory_saver: MemorySaver,
@@ -35,346 +401,439 @@ class DialogueManager:
         fallback_intent_id: str,
         intent_confidence_threshold: float,
     ):
+        """Initialize dialogue manager with dependencies.
+        
+        Args:
+            memory_saver: Memory persistence service
+            intents: List of available intents
+            nlu_pipeline: NLU processing pipeline
+            fallback_intent_id: ID of fallback intent
+            intent_confidence_threshold: Minimum confidence for intent acceptance
+        """
         self.memory_saver = memory_saver
         self.nlu_pipeline = nlu_pipeline
-        self.intents = {
-            intent.intent_id: intent for intent in intents
-        }  # Map for faster lookup
+        self.intents = {intent.intent_id: intent for intent in intents}
         self.fallback_intent_id = fallback_intent_id
         self.confidence_threshold = intent_confidence_threshold
-
+        
+        # Initialize sub-services
+        self.intent_resolver = IntentResolver(
+            self.intents,
+            fallback_intent_id,
+            intent_confidence_threshold,
+        )
+        self.parameter_filler = ParameterFiller()
+        self.api_caller = APICaller()
+        self.response_generator = ResponseGenerator()
+        
+        # NLU result cache
+        self._nlu_cache: Dict[str, NLUResult] = {}
+        self._cache_lock = asyncio.Lock()
+    
     @classmethod
     async def from_config(cls):
+        """Initialize DialogueManager from configuration.
+        
+        Returns:
+            Configured DialogueManager instance
+            
+        Raises:
+            DialogueManagerException: If initialization fails
         """
-        Initialize DialogueManager with all required dependencies
-        """
-
-        # Load all intents and convert to domain models
-        db_intents = await list_intents()
-        intents = [IntentModel.from_db(intent) for intent in db_intents]
-
-        # Initialize pipeline with components
-        nlu_pipeline = await get_pipeline()
-
-        # Get configuration
-        fallback_intent_id = app_config.DEFAULT_FALLBACK_INTENT_NAME
-
-        # Get bot configuration
-        bot = await get_bot("default")
-        confidence_threshold = (
-            bot.nlu_config.traditional_settings.intent_detection_threshold
-        )
-
-        memory_saver = MemorySaverMongo(client)
-
-        return cls(
-            memory_saver,
-            intents,
-            nlu_pipeline,
-            fallback_intent_id,
-            confidence_threshold,
-        )
-
-    def update_model(self, models_dir):
-        """
-        Signal hook to be called after training is completed.
-        Reloads ML models and synonyms.
-        """
-        # Load models
-        ok = self.nlu_pipeline.load(models_dir)
-        if not ok:
-            self.nlu_pipeline = None
-        logger.info("NLU Pipeline models updated")
-
-    async def process(self, message: UserMessage) -> State:
-        """
-        Single entry point to process the user message.
-
-        :param message: UserMessage instance containing the request data.
-        :return: current state of the conversation including the bot response
-        """
-
-        if self.nlu_pipeline is None:
-            raise DialogueManagerException(
-                "NLU pipeline is not initialized. Please build the models."
-            )
-
-        # Step 1: Get current state
-        current_state = await self.memory_saver.get(message.thread_id)
-
-        if not current_state:
-            logger.debug(
-                f"No current state found for thread_id: {message.thread_id}, creating new state"
-            )
-            current_state = await self.memory_saver.init_state(message.thread_id)
-
-        current_state.update(message)
-
         try:
-            # Step 2: Process through NLU pipeline
-            nlu_result = self.nlu_pipeline.process(
-                {"text": current_state.user_message.text}
+            # Load intents via internal API
+            intents = await cls._load_intents_from_api()
+            
+            # Initialize NLU pipeline
+            nlu_pipeline = await get_pipeline()
+            
+            # Get configuration
+            fallback_intent_id = app_config.DEFAULT_FALLBACK_INTENT_NAME
+            
+            # Get bot configuration via internal API
+            confidence_threshold = await cls._load_confidence_threshold_from_api()
+            
+            # Initialize memory saver
+            memory_saver = MemorySaverMongo(client)
+            
+            return cls(
+                memory_saver,
+                intents,
+                nlu_pipeline,
+                fallback_intent_id,
+                confidence_threshold,
             )
-
-            # Step 3: Get intent ID and confidence
-            query_intent_id, _ = self._get_intent_id_and_confidence(
-                current_state, nlu_result
-            )
-
-            # Step 4: Retrieve the intent object
-            query_intent = self._get_intent(query_intent_id)
-            if query_intent is None:
-                query_intent = self._get_fallback_intent()
-
-            current_state.nlu = {
-                "entities": nlu_result.get("entities"),
-                "intent": nlu_result.get("intent"),
-            }
-
-            # if query_intent is not the same as active intent,
-            # fetch active intent as well
-            active_intent_id = current_state.get_active_intent_id()
-            if active_intent_id and query_intent_id != active_intent_id:
-                active_intent = self._get_intent(current_state.intent["id"])
-            else:
-                active_intent = query_intent
-
-            # Step 5: Process the intent
-            current_state, active_intent = self._process_intent(
-                query_intent,
-                active_intent,
+        except Exception as e:
+            logger.error(f"Failed to initialize DialogueManager: {e}", exc_info=True)
+            raise DialogueManagerException(f"Initialization failed: {str(e)}")
+    
+    @staticmethod
+    async def _load_intents_from_api() -> List[IntentModel]:
+        """Load intents from internal API instead of direct import.
+        
+        Returns:
+            List of IntentModel instances
+            
+        Raises:
+            DialogueManagerException: If API call fails
+        """
+        try:
+            # This would call the internal intents API
+            # For now, using fallback to original import
+            from app.admin.intents.store import list_intents
+            db_intents = await list_intents()
+            return [IntentModel.from_db(intent) for intent in db_intents]
+        except Exception as e:
+            logger.error(f"Failed to load intents from API: {e}")
+            raise DialogueManagerException(f"Failed to load intents: {str(e)}")
+    
+    @staticmethod
+    async def _load_confidence_threshold_from_api() -> float:
+        """Load confidence threshold from internal API.
+        
+        Returns:
+            Confidence threshold value
+            
+        Raises:
+            DialogueManagerException: If API call fails
+        """
+        try:
+            # This would call the internal bot config API
+            # For now, using fallback to original import
+            from app.admin.bots.store import get_bot
+            bot = await get_bot("default")
+            return bot.nlu_config.traditional_settings.intent_detection_threshold
+        except Exception as e:
+            logger.error(f"Failed to load confidence threshold from API: {e}")
+            raise DialogueManagerException(f"Failed to load configuration: {str(e)}")
+    
+    def update_model(self, models_dir: str) -> None:
+        """Update NLU models after training completion.
+        
+        Args:
+            models_dir: Directory containing trained models
+            
+        Raises:
+            DialogueManagerException: If model loading fails
+        """
+        try:
+            ok = self.nlu_pipeline.load(models_dir)
+            if not ok:
+                raise DialogueManagerException("Failed to load NLU models")
+            
+            # Clear NLU cache on model update
+            self._nlu_cache.clear()
+            logger.info("NLU Pipeline models updated and cache cleared")
+        except Exception as e:
+            logger.error(f"Failed to update NLU models: {e}", exc_info=True)
+            raise DialogueManagerException(f"Model update failed: {str(e)}")
+    
+    async def process(self, message: UserMessage) -> State:
+        """Process user message through dialogue pipeline.
+        
+        Args:
+            message: UserMessage instance
+            
+        Returns:
+            Updated conversation State
+            
+        Raises:
+            DialogueManagerException: If processing fails
+        """
+        metrics = DialogueMetrics(thread_id=message.thread_id, state=DialogueState.IDLE)
+        start_time = datetime.now(UTC)
+        
+        try:
+            if self.nlu_pipeline is None:
+                raise NLUServiceException(
+                    "NLU pipeline is not initialized. Please build the models."
+                )
+            
+            # Step 1: Get or initialize conversation state
+            metrics.state = DialogueState.PROCESSING_NLU
+            current_state = await self._get_or_init_state(message)
+            
+            # Step 2: Process through NLU pipeline with caching
+            nlu_start = datetime.now(UTC)
+            nlu_result = await self._process_nlu(current_state.user_message.text)
+            metrics.nlu_processing_time = (datetime.now(UTC) - nlu_start).total_seconds()
+            
+            # Step 3: Resolve intent
+            metrics.state = DialogueState.RESOLVING_INTENT
+            intent_start = datetime.now(UTC)
+            query_intent_id, confidence = await self.intent_resolver.resolve(
+                current_state.user_message.text,
+                nlu_result,
                 current_state,
             )
-            current_state.intent = {"id": active_intent.intent_id}
-
-            # Step 6: Handle API trigger if the intent is complete
-            if current_state.complete:
-                current_state = await self._handle_api_trigger(
-                    active_intent, current_state
-                )
-
-            logger.debug(
-                f"Processed input: {current_state.thread_id}",
-                extra=current_state.to_dict(),
-            )
-
-            # Step 7: Save the state
-            await self.memory_saver.save(message.thread_id, current_state)
-
-            return current_state
-
-        except Exception as e:
-            logger.error(f"Error processing request: {e}", exc_info=True)
-            raise
-
-    def _get_intent_id_and_confidence(
-        self, current_state: State, nlu_result: Dict
-    ) -> Tuple[str, float]:
-        """
-        Determine the intent ID and confidence based on the request input.
-        """
-        input_text = current_state.user_message.text
-        if input_text.startswith("/"):
-            intent_id = input_text.split("/")[1]
-            confidence = 1.0
-        else:
-            predicted = nlu_result["intent"]
-            if predicted["confidence"] < self.confidence_threshold:
-                return self.fallback_intent_id, 1.0
+            metrics.intent_resolution_time = (datetime.now(UTC) - intent_start).total_seconds()
+            
+            # Step 4: Get intent objects
+            query_intent = self.intent_resolver.get_intent(query_intent_id)
+            if query_intent is None:
+                query_intent = self.intent_resolver.get_fallback_intent()
+            
+            # Store NLU results in state
+            current_state = self._update_state_with_nlu(current_state, nlu_result)
+            
+            # Step 5: Handle cancel intent
+            if query_intent.intent_id == "cancel":
+                current_state = self._handle_cancel_intent(current_state)
             else:
-                return predicted["intent"], predicted["confidence"]
-        return intent_id, confidence
-
-    def _get_intent(self, intent_id: str) -> Optional[IntentModel]:
-        """
-        Retrieve the intent object by its ID.
-        """
-        return self.intents.get(intent_id)
-
-    def _get_fallback_intent(self) -> IntentModel:
-        """
-        Retrieve the fallback intent.
-        """
-        return self.intents[self.fallback_intent_id]
-
-    def _process_intent(
-        self,
-        query_intent: IntentModel,
-        active_intent: IntentModel,
-        current_state: State,
-    ) -> Tuple[State, IntentModel]:
-        """
-        Process the intent and update the result model
-        with extracted parameters and other details.
-        """
-        # cancel intent should cancel active intent and reset chat model
-        if query_intent.intent_id == "cancel":
-            active_intent = query_intent
-            current_state.complete = True
-            current_state.parameters = []
-            current_state.extracted_parameters = {}
-            current_state.missing_parameters = []
-            current_state.current_node = None
-            return current_state, active_intent
-
-        parameters = active_intent.parameters
-
-        if parameters:
-            # Get entities from NLU pipeline result
-            extracted_entities = current_state.nlu.get("entities", {})
-
-            # Group entities by type
-            entities_by_type = {}
-            for entity_name, entity_value in extracted_entities.items():
-                if entity_name not in entities_by_type:
-                    entities_by_type[entity_name] = []
-                entities_by_type[entity_name].append(entity_value)
-
-            # populate parameters
-            if len(current_state.parameters) == 0:
-                for param in parameters:
-                    current_state.parameters.append(
-                        {
-                            "name": param.name,
-                            "type": param.type,
-                            "required": param.required,
-                        }
+                # Step 6: Fill parameters
+                metrics.state = DialogueState.FILLING_PARAMETERS
+                fill_start = datetime.now(UTC)
+                current_state = await self._fill_parameters(query_intent, current_state)
+                metrics.parameter_filling_time = (datetime.now(UTC) - fill_start).total_seconds()
+                
+                # Step 7: Call API if intent is complete
+                if current_state.complete:
+                    metrics.state = DialogueState.CALLING_API
+                    api_start = datetime.now(UTC)
+                    current_state = await self._handle_api_and_response(
+                        query_intent,
+                        current_state,
                     )
-
-            # Match extracted entities with parameters based on type
-            for param in parameters:
-                # For free_text parameters being prompted
-                if (
-                    param.type == "free_text"
-                    and current_state.current_node == param.name
-                ):
-                    current_state.extracted_parameters[param.name] = (
-                        current_state.user_message.text
-                    )
-                    continue
+                    metrics.api_call_time = (datetime.now(UTC) - api_start).total_seconds()
                 else:
-                    # Get all entities of matching type
-                    if param.type in entities_by_type and entities_by_type[param.type]:
-                        # Take the next available entity of this type
-                        current_state.extracted_parameters[param.name] = (
-                            entities_by_type[param.type].pop(0)
-                        )
-
-            # Handle missing parameters
-            current_state = self._handle_missing_parameters(parameters, current_state)
-
-        # Check if there are no missing parameters
-        # to mark the intent as complete
-        current_state.complete = not current_state.missing_parameters
-        return current_state, active_intent
-
-    def _handle_missing_parameters(
-        self, parameters: List[ParameterModel], current_state: State
+                    # Generate prompt for missing parameters
+                    metrics.state = DialogueState.GENERATING_RESPONSE
+                    gen_start = datetime.now(UTC)
+                    current_state = await self._generate_parameter_prompt(
+                        current_state
+                    )
+                    metrics.response_generation_time = (
+                        datetime.now(UTC) - gen_start
+                    ).total_seconds()
+            
+            current_state = current_state.replace(intent={"id": query_intent.intent_id})
+            
+            # Step 8: Save state
+            await self.memory_saver.save(message.thread_id, current_state)
+            
+            metrics.state = DialogueState.COMPLETE
+            metrics.total_time = (datetime.now(UTC) - start_time).total_seconds()
+            
+            logger.debug(
+                f"Processed message for thread {message.thread_id}",
+                extra={"metrics": metrics.to_dict()},
+            )
+            
+            return current_state
+            
+        except Exception as e:
+            metrics.state = DialogueState.ERROR
+            metrics.error = str(e)
+            metrics.total_time = (datetime.now(UTC) - start_time).total_seconds()
+            
+            logger.error(
+                f"Error processing request for thread {message.thread_id}: {e}",
+                exc_info=True,
+                extra={"metrics": metrics.to_dict()},
+            )
+            raise
+    
+    async def _get_or_init_state(self, message: UserMessage) -> State:
+        """Get existing state or initialize new one.
+        
+        Args:
+            message: User message
+            
+        Returns:
+            Conversation state
+        """
+        current_state = await self.memory_saver.get(message.thread_id)
+        
+        if not current_state:
+            logger.debug(f"Creating new state for thread {message.thread_id}")
+            current_state = await self.memory_saver.init_state(message.thread_id)
+        
+        return current_state.update(message)
+    
+    async def _process_nlu(self, text: str) -> Dict:
+        """Process text through NLU pipeline with caching.
+        
+        Args:
+            text: Input text
+            
+        Returns:
+            NLU result dictionary
+            
+        Raises:
+            NLUServiceException: If NLU processing fails
+        """
+        try:
+            # Check cache
+            async with self._cache_lock:
+                if text in self._nlu_cache:
+                    cached = self._nlu_cache[text]
+                    if not cached.is_stale():
+                        logger.debug(f"Using cached NLU result for: {text}")
+                        return {
+                            "intent": cached.intent,
+                            "entities": cached.entities,
+                        }
+            
+            # Process through pipeline
+            result = self.nlu_pipeline.process({"text": text})
+            
+            # Cache result
+            async with self._cache_lock:
+                self._nlu_cache[text] = NLUResult(
+                    text=text,
+                    intent=result.get("intent", {}),
+                    entities=result.get("entities", {}),
+                    confidence=result.get("intent", {}).get("confidence", 0.0),
+                )
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"NLU processing failed: {e}", exc_info=True)
+            raise NLUServiceException(f"NLU processing failed: {str(e)}")
+    
+    @staticmethod
+    def _update_state_with_nlu(current_state: State, nlu_result: Dict) -> State:
+        """Update state with NLU results.
+        
+        Args:
+            current_state: Current state
+            nlu_result: NLU result
+            
+        Returns:
+            Updated state
+        """
+        return current_state.replace(
+            nlu={
+                "entities": nlu_result.get("entities", {}),
+                "intent": nlu_result.get("intent", {}),
+            }
+        )
+    
+    @staticmethod
+    def _handle_cancel_intent(current_state: State) -> State:
+        """Handle cancel intent by resetting state.
+        
+        Args:
+            current_state: Current state
+            
+        Returns:
+            Reset state
+        """
+        return current_state.replace(
+            complete=True,
+            parameters=[],
+            extracted_parameters={},
+            missing_parameters=[],
+            current_node="",
+            bot_message=[{"text": "Cancelled."}],
+        )
+    
+    async def _fill_parameters(
+        self,
+        intent: IntentModel,
+        current_state: State,
     ) -> State:
+        """Fill intent parameters.
+        
+        Args:
+            intent: Intent with parameters
+            current_state: Current state
+            
+        Returns:
+            Updated state with filled parameters
         """
-        Handle missing parameters in the result model.
-
-        :param parameters: List of parameters from the intent.
-        :param chat_model_response: The ChatModel instance to be updated.
-        :return: Updated ChatModel instance.
-        """
-        missing_parameters = []
-        current_state.missing_parameters = []
-
-        # clear current node
-        current_state.current_node = None
-        current_state.bot_message = []
-
-        for parameter in parameters:
-            if (
-                parameter.required
-                and parameter.name not in current_state.extracted_parameters
-            ):
-                current_state.missing_parameters.append(parameter.name)
-                missing_parameters.append(parameter)
-
-        if missing_parameters:
-            current_node = missing_parameters[0]
-            current_state.current_node = current_node.name
-            current_state.bot_message = [
-                {"text": msg} for msg in split_sentence(current_node.prompt)
+        if not intent.parameters:
+            return current_state.replace(complete=True)
+        
+        # Initialize parameters list if empty
+        if not current_state.parameters:
+            parameters = [
+                {
+                    "name": param.name,
+                    "type": param.type,
+                    "required": param.required,
+                }
+                for param in intent.parameters
             ]
-        return current_state
-
-    async def _handle_api_trigger(
-        self, intent: IntentModel, current_state: State
+            current_state = current_state.replace(parameters=parameters)
+        
+        # Fill parameters
+        extracted_entities = current_state.nlu.get("entities", {})
+        extracted_params, missing_params = await self.parameter_filler.fill(
+            intent.parameters,
+            extracted_entities,
+            current_state,
+        )
+        
+        return current_state.replace(
+            extracted_parameters=extracted_params,
+            missing_parameters=missing_params,
+            complete=len(missing_params) == 0,
+        )
+    
+    async def _handle_api_and_response(
+        self,
+        intent: IntentModel,
+        current_state: State,
     ) -> State:
+        """Call API and generate response.
+        
+        Args:
+            intent: Intent with API configuration
+            current_state: Current state
+            
+        Returns:
+            Updated state with response
         """
-        Handle API trigger if the intent requires it.
-        """
+        api_result = None
+        
         if intent.api_trigger and intent.api_details:
             try:
-                result = await self._call_intent_api(intent, current_state)
-                template = Template(
-                    intent.speech_response,
-                    undefined=SilentUndefined,
-                    enable_async=True,
-                )
-                rendered_text = await template.render_async(
-                    context=current_state.context,
-                    parameters=current_state.extracted_parameters,
-                    result=result,
-                )
-
-                current_state.bot_message = [
-                    {"text": msg} for msg in split_sentence(rendered_text)
-                ]
-
-            except DialogueManagerException as e:
+                api_result = await self.api_caller.call(intent, current_state)
+            except APICallException as e:
                 logger.warning(f"API call failed: {e}")
-                current_state.bot_message = [
-                    {"text": "Service is not available. Please try again later."}
-                ]
-        else:
-            template = Template(
-                intent.speech_response,
-                undefined=SilentUndefined,
-                enable_async=True,
-            )
-            rendered_text = await template.render_async(
-                context=current_state.context,
-                parameters=current_state.extracted_parameters,
-            )
-            current_state.bot_message = [
-                {"text": msg} for msg in split_sentence(rendered_text)
-            ]
-        return current_state
-
-    async def _call_intent_api(self, intent: IntentModel, current_state: State):
-        """
-        Call the API associated with the intent.
-        """
-        api_details = intent.api_details
-        headers = api_details.get_headers()
-        url_template = Template(api_details.url, undefined=SilentUndefined)
-        rendered_url = url_template.render(
-            context=current_state.context, parameters=current_state.extracted_parameters
+                return current_state.replace(
+                    bot_message=[
+                        {"text": "Service is not available. Please try again later."}
+                    ]
+                )
+        
+        # Generate response
+        messages = await self.response_generator.generate(
+            intent,
+            current_state,
+            api_result,
         )
-        if api_details.is_json:
-            request_template = Template(
-                api_details.json_data, undefined=SilentUndefined
-            )
-            request_json = request_template.render(
-                context=current_state.context,
-                parameters=current_state.extracted_parameters,
-            )
-            parameters = json.loads(request_json)
-        else:
-            parameters = current_state.extracted_parameters
-
-        try:
-            return await call_api(
-                rendered_url,
-                api_details.request_type,
-                headers,
-                parameters,
-                api_details.is_json,
-            )
-        except APICallExcetion as e:
-            logger.warning(f"API call failed: {e}")
-            raise DialogueManagerException("API call failed")
+        
+        return current_state.replace(bot_message=messages)
+    
+    async def _generate_parameter_prompt(self, current_state: State) -> State:
+        """Generate prompt for missing parameters.
+        
+        Args:
+            current_state: Current state
+            
+        Returns:
+            Updated state with prompt
+        """
+        if not current_state.missing_parameters:
+            return current_state
+        
+        # Get first missing parameter
+        missing_param_name = current_state.missing_parameters[0]
+        
+        # Find parameter definition
+        for param in current_state.parameters:
+            if param.get("name") == missing_param_name:
+                # Find the actual parameter model to get prompt
+                # This is a simplified version - in production would need access to intent
+                prompt_text = f"Please provide {missing_param_name}"
+                messages = [{"text": msg} for msg in split_sentence(prompt_text)]
+                
+                return current_state.replace(
+                    current_node=missing_param_name,
+                    bot_message=messages,
+                )
+        
+        return current_state

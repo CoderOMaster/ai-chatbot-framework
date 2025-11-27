@@ -1,0 +1,31 @@
+version: "3.8"
+
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8080}
+      NEXT_PUBLIC_AUTH_DOMAIN: ${NEXT_PUBLIC_AUTH_DOMAIN:-http://localhost:9000}
+      NEXT_PUBLIC_PUBLIC_URL: ${NEXT_PUBLIC_PUBLIC_URL:-http://localhost:3000}
+      NEXT_PUBLIC_SENTRY_DSN: ${NEXT_PUBLIC_SENTRY_DSN:-}
+      NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-dev-secret-key}
+      NEXTAUTH_COGNITO_ID: ${NEXTAUTH_COGNITO_ID:-}
+      NEXTAUTH_COGNITO_SECRET: ${NEXTAUTH_COGNITO_SECRET:-}
+      NEXTAUTH_COGNITO_ISSUER: ${NEXTAUTH_COGNITO_ISSUER:-}
+      NEXTAUTH_AUTH0_ID: ${NEXTAUTH_AUTH0_ID:-}
+      NEXTAUTH_AUTH0_SECRET: ${NEXTAUTH_AUTH0_SECRET:-}
+      NEXTAUTH_AUTH0_ISSUER: ${NEXTAUTH_AUTH0_ISSUER:-}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

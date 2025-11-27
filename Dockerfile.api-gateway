@@ -1,0 +1,39 @@
+# API Gateway Microservice
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install Python dependencies - minimal for API gateway
+RUN pip install --no-cache-dir \
+    fastapi==0.104.1 \
+    uvicorn[standard]==0.24.0 \
+    httpx==0.25.0 \
+    pydantic==2.5.0 \
+    pydantic-settings==2.1.0 \
+    python-dotenv==1.0.0
+
+# Copy application code
+COPY app ./app
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Environment variables
+ENV SERVICE_TIMEOUT=30
+ENV CORS_ORIGINS=["*"]
+ENV ALLOWED_HOSTS=["*"]
+ENV ADMIN_SERVICE_URL=http://admin-service:8001
+ENV BOT_SERVICE_URL=http://bot-service:8002
+ENV DIALOGUE_SERVICE_URL=http://dialogue-service:8003
+
+# Run application
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
