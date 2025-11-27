@@ -6,7 +6,7 @@ from pydantic import PlainSerializer, PlainValidator
 import asyncio
 import logging
 
-from app.config import app_config
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -131,8 +131,8 @@ class DatabaseClient:
 
 # Initialize default database client instance
 _db_client = DatabaseClient(
-    mongodb_host=app_config.MONGODB_HOST,
-    mongodb_database=app_config.MONGODB_DATABASE,
+    mongodb_host=settings.MONGODB_HOST,
+    mongodb_database=settings.MONGODB_DATABASE,
 )
 
 

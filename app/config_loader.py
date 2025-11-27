@@ -2,11 +2,13 @@
 import os
 from typing import Type
 
-from pydantic import BaseModel, ValidationError, Field
+from pydantic import BaseModel, ValidationError, Field, ConfigDict
 
 
 class BaseConfig(BaseModel):
     """Base configuration with common settings."""
+    
+    model_config = ConfigDict(extra="allow")
 
     DEBUG: bool = False
     Development: bool = False
@@ -26,11 +28,6 @@ class BaseConfig(BaseModel):
     ADMIN_SERVICE_URL: str = "http://admin-service:8001"
     BOT_SERVICE_URL: str = "http://bot-service:8002"
     DIALOGUE_SERVICE_URL: str = "http://dialogue-service:8003"
-
-    class Config:
-        """Pydantic config."""
-
-        extra = "allow"
 
 
 class DevelopmentConfig(BaseConfig):
