@@ -204,13 +204,28 @@
       this.isTyping = false;
       this.currentState = {
         thread_id: this.uuid(),
-        text: "/init_conversation",
+        text: '/init_conversation',
         context: {},
       };
       this.response = [];
+      this.endpoint = this.resolveChatEndpoint();
       this.createElements();
       this.attachEventListeners();
       this.initChat();
+    }
+
+    resolveChatEndpoint() {
+      if (typeof window.iky_widget_backend_url === 'string' && window.iky_widget_backend_url.trim()) {
+        return window.iky_widget_backend_url.trim();
+      }
+
+      if (typeof window.iky_base_url === 'string' && window.iky_base_url.trim()) {
+        const cleanedBase = window.iky_base_url.replace(/\/$/, '');
+        return `${cleanedBase}/bots/channels/rest/webbook`;
+      }
+
+      console.warn('Chat widget backend URL is not configured. Falling back to default REST endpoint.');
+      return '/bots/channels/rest/webbook';
     }
 
     createElements() {
@@ -281,10 +296,21 @@
       }
     }
 
+    sanitizeMessageContent(content) {
+      if (content === null || content === undefined) {
+        return '';
+      }
+      return typeof content === 'string' ? content : String(content);
+    }
+
     addMessage(content, isUser = false) {
       const message = document.createElement('div');
       message.className = `iky-message ${isUser ? 'user' : 'bot'}`;
-      message.innerHTML = content; // Changed from textContent to innerHTML to render HTML content
+
+      const text = document.createElement('span');
+      text.textContent = this.sanitizeMessageContent(content);
+      message.appendChild(text);
+
       this.messages.appendChild(message);
       this.scrollToBottom();
     }
@@ -295,11 +321,13 @@
 
       const typing = document.createElement('div');
       typing.className = 'iky-typing';
-      typing.innerHTML = `
-        <div class="iky-typing-dot"></div>
-        <div class="iky-typing-dot"></div>
-        <div class="iky-typing-dot"></div>
-      `;
+
+      for (let i = 0; i < 3; i += 1) {
+        const dot = document.createElement('div');
+        dot.className = 'iky-typing-dot';
+        typing.appendChild(dot);
+      }
+
       this.messages.appendChild(typing);
       this.scrollToBottom();
     }
@@ -317,15 +345,16 @@
     }
 
     uuid() {
-      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-          var r = Math.random()*16|0, v = c == 'x' ? r : (r&0x3|0x8);
-          return v.toString(16);
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+        var r = (Math.random() * 16) | 0;
+        var v = c == 'x' ? r : (r & 0x3) | 0x8;
+        return v.toString(16);
       });
     }
 
     async initChat() {
       try {
-        const response = await fetch(`${window.iky_base_url}/bots/channels/rest/webbook`, {
+        const response = await fetch(this.endpoint, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -360,14 +389,14 @@
       this.showTyping();
 
       try {
-        const response = await fetch(`${window.iky_base_url}/bots/channels/rest/webbook`, {
+        const response = await fetch(this.endpoint, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
             ...this.currentState,
-            text: message
+            text: message,
           }),
         });
 

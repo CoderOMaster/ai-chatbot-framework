@@ -1,3 +1,7 @@
-from config import from_envvar
+"""Expose the immutable application settings for the shared services."""
 
-app_config = from_envvar()
+from typing import Final
+
+from core.settings import AppConfig, from_envvar
+
+app_config: Final[AppConfig] = from_envvar()

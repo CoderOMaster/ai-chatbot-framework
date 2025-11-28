@@ -1,44 +1,70 @@
 import os
-from typing import Dict, Any, List
+from typing import Any, Dict, List, Optional, Tuple
+
 import cloudpickle
 import numpy as np
+from pydantic import BaseSettings
+from sklearn.base import ClassifierMixin
+
 from app.bot.nlu.pipeline import NLUComponent
 import logging
 
 logger = logging.getLogger(__name__)
 
 
+class SklearnIntentClassifierConfig(BaseSettings):
+    """Environment aware configuration for the sklearn intent classifier."""
+
+    model_path: str = "/app/models"
+    model_name: str = "sklearn_intent_model.hd5"
+
+
 class SklearnIntentClassifier(NLUComponent):
-    """Sklearn-based intent classifier that implements NLUComponent interface."""
+    """Sklearn intent classifier used by dialogue-manager for inference."""
 
     INTENT_RANKING_LENGTH = 3
-    MODEL_NAME = "sklearn_intent_model.hd5"
 
-    def __init__(self):
-        self.model = None
+    def __init__(
+        self,
+        config: Optional[SklearnIntentClassifierConfig] = None,
+        model: Optional[ClassifierMixin] = None,
+    ) -> None:
+        self.config = config or SklearnIntentClassifierConfig()
+        self.model: Optional[ClassifierMixin] = model
 
-    def get_spacy_embedding(self, spacy_doc):
-        """
-        perform basic cleaning,tokenization and lemmatization
-        :param sentence:
-        :return list of clean tokens:
-        """
+    def _model_full_path(self, override_path: Optional[str] = None) -> str:
+        root_path = override_path or self.config.model_path
+        os.makedirs(root_path, exist_ok=True)
+        return os.path.join(root_path, self.config.model_name)
+
+    def get_spacy_embedding(self, spacy_doc: Any) -> np.ndarray:
+        """Return the vector representation extracted from a spaCy doc."""
         return np.array(spacy_doc.vector)
 
-    def train(self, training_data: List[Dict[str, Any]], model_path: str) -> None:
-        """Train intent classifier for given training data"""
+    def train(
+        self,
+        training_data: List[Dict[str, Any]],
+        output_path: Optional[str] = None,
+    ) -> None:
+        """Train and serialize a GridSearch-backed sklearn intent classifier."""
         from sklearn.model_selection import GridSearchCV
         from sklearn.svm import SVC
 
-        X = []
-        y = []
+        X: List[Any] = []
+        y: List[str] = []
         for example in training_data:
-            if example.get("text", "").strip() == "":
+            if not example.get("text", "").strip():
                 continue
-            X.append(example.get("spacy_doc"))
-            y.append(example.get("intent"))
+            spacy_doc = example.get("spacy_doc")
+            if spacy_doc is None:
+                continue
+            X.append(spacy_doc)
+            y.append(example.get("intent", ""))
 
-        X = np.stack([self.get_spacy_embedding(example) for example in X])
+        if not X or not y:
+            raise ValueError("Training data must contain at least one valid example.")
+
+        embeddings = np.stack([self.get_spacy_embedding(example) for example in X])
 
         _, counts = np.unique(y, return_counts=True)
         cv_splits = max(2, min(5, np.min(counts) // 5))
@@ -56,67 +82,60 @@ class SklearnIntentClassifier(NLUComponent):
             verbose=1,
         )
 
-        classifier.fit(X, y)
+        classifier.fit(embeddings, y)
 
-        if model_path:
-            path = os.path.join(model_path, self.MODEL_NAME)
-            with open(path, "wb") as f:
-                cloudpickle.dump(classifier.best_estimator_, f)
-        logger.info("Training completed & model written out to {}".format(path))
+        path = self._model_full_path(override_path=output_path)
+        with open(path, "wb") as f:
+            cloudpickle.dump(classifier.best_estimator_, f)
+        logger.info("Training completed & model written out to %s", path)
 
         self.model = classifier.best_estimator_
 
-    def load(self, model_path: str) -> bool:
-        """Load trained model from given path"""
+    def load(self, model_path: Optional[str] = None) -> bool:
+        """Load the classifier from the configured model path."""
         try:
-            path = os.path.join(model_path, self.MODEL_NAME)
+            path = self._model_full_path(override_path=model_path)
             with open(path, "rb") as f:
                 self.model = cloudpickle.load(f)
             return True
-        except IOError:
+        except OSError as exc:
+            logger.warning("Unable to load sklearn model from %s: %s", path, exc)
             return False
 
-    def predict_proba(self, X):
-        """Given a bow vector of an input text, predict most probable label.
-         Returns only the most likely label.
+    def predict_proba(self, message: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
+        """Predict probability distribution over classes for the provided message."""
+        if not self.model:
+            raise RuntimeError("Model is not loaded; call load() before prediction.")
 
-        :param X: bow of input text
-        :return: tuple of first, the most probable label
-        and second, its probability"""
-
-        pred_result = self.model.predict_proba(
-            [self.get_spacy_embedding(X.get("spacy_doc"))]
-        )
-        # sort the probabilities retrieving the indices of the elements
-        sorted_indices = np.fliplr(np.argsort(pred_result, axis=1))
-        return sorted_indices, pred_result[:, sorted_indices]
+        embedding = self.get_spacy_embedding(message.get("spacy_doc"))
+        probabilities = self.model.predict_proba([embedding])
+        sorted_indices = np.fliplr(np.argsort(probabilities, axis=1))
+        return sorted_indices, probabilities[:, sorted_indices]
 
     def process(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        """Process a message and return the extracted information."""
+        """Extract intent and intent ranking for a single message."""
         if not message.get("text") or not message.get("spacy_doc"):
             return message
 
-        intent = {"name": None, "confidence": 0.0}
-        intent_ranking = []
+        intent_data: Dict[str, Any] = {"name": None, "confidence": 0.0}
+        intent_ranking: List[Dict[str, Any]] = []
 
         if self.model:
             intents, probabilities = self.predict_proba(message)
-            intents = [self.model.classes_[intent] for intent in intents.flatten()]
-            probabilities = probabilities.flatten()
+            flat_intents = [self.model.classes_[idx] for idx in intents.flatten()]
+            flat_probs = probabilities.flatten()
 
-            if len(intents) > 0 and len(probabilities) > 0:
-                ranking = list(zip(list(intents), list(probabilities)))
-                ranking = ranking[: self.INTENT_RANKING_LENGTH]
-
-                intent = {"intent": intents[0], "confidence": probabilities[0]}
+            if flat_intents and flat_probs.size:
+                ranking = list(zip(flat_intents, flat_probs))[: self.INTENT_RANKING_LENGTH]
+                intent_data = {"intent": ranking[0][0], "confidence": ranking[0][1]}
                 intent_ranking = [
                     {"intent": intent_name, "confidence": score}
                     for intent_name, score in ranking
                 ]
-            else:
-                intent = {"name": None, "confidence": 0.0}
-                intent_ranking = []
 
-        message["intent"] = intent
+        message["intent"] = intent_data
         message["intent_ranking"] = intent_ranking
         return message
+
+
+__all__ = ["SklearnIntentClassifier", "SklearnIntentClassifierConfig"]
