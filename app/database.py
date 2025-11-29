@@ -15,6 +15,7 @@ __all__ = [
     "CollectionGetter",
     "create_mongo_collection_getter",
     "create_collection_getter_from_config",
+    "client",
 ]
 
 CollectionGetter: TypeAlias = Callable[[str], AsyncIOMotorCollection]
@@ -52,3 +53,9 @@ def create_collection_getter_from_config(config: AppConfig) -> CollectionGetter:
         host=config.MONGODB_HOST,
         database_name=config.MONGODB_DATABASE,
     )
+
+
+# Create a global MongoDB client instance
+from app.config import app_config
+
+client: AsyncIOMotorClient = AsyncIOMotorClient(app_config.MONGODB_HOST)

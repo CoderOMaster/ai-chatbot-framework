@@ -6,7 +6,8 @@ from functools import lru_cache
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
-from pydantic import BaseSettings, Field
+from pydantic import Field
+from pydantic_settings import BaseSettings
 
 from app.bot.channels.facebook.messenger import FacebookReceiver
 from app.bot.dialogue_manager.http_client import APICallException, call_api

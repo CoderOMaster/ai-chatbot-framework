@@ -5,7 +5,8 @@ from __future__ import annotations
 import os
 from typing import Dict, Final, Literal, MutableMapping
 
-from pydantic import BaseSettings, Field, root_validator
+from pydantic import Field, root_validator
+from pydantic_settings import BaseSettings
 
 EnvironmentChoice = Literal["Development", "Testing", "Production"]
 

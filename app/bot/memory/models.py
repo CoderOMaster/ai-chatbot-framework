@@ -121,4 +121,3 @@ class State:
         if self.intent:
             return self.intent.get("id")
         return None
-'}{

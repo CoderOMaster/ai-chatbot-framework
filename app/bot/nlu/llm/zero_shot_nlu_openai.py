@@ -7,7 +7,8 @@ from jinja2 import Environment, FileSystemLoader
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
-from pydantic import BaseSettings, Field
+from pydantic import Field
+from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
 PROMPTS_DIRECTORY = Path(__file__).resolve().parent / "prompts"

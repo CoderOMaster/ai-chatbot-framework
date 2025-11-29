@@ -1,7 +1,21 @@
 from __future__ import annotations
 
+from fastapi import APIRouter, Depends, HTTPException
+
 from app.admin.integrations.schemas import Integration, IntegrationUpdate
 from app.admin.integrations.store import IntegrationRepository
+from app.config import app_config
+from app.database import create_collection_getter_from_config
+
+router = APIRouter(prefix="/integrations", tags=["integrations"])
+
+_collection_getter = create_collection_getter_from_config(app_config)
+
+
+def get_integration_repository() -> IntegrationRepository:
+    """Provide a repository instance wired to the configured database collections."""
+
+    return IntegrationRepository(_collection_getter)
 
 
 class IntegrationError(Exception):
@@ -64,6 +78,40 @@ async def update_integration_handler(
     return updated_integration
 
 
+def _to_http_exception(exc: IntegrationError) -> HTTPException:
+    return HTTPException(status_code=exc.status_code, detail=str(exc))
+
+
+@router.get("/", response_model=list[Integration])
+async def list_integrations(
+    repository: IntegrationRepository = Depends(get_integration_repository),
+) -> list[Integration]:
+    return await list_integrations_handler(repository)
+
+
+@router.get("/{integration_id}", response_model=Integration)
+async def get_integration(
+    integration_id: str,
+    repository: IntegrationRepository = Depends(get_integration_repository),
+) -> Integration:
+    try:
+        return await get_integration_handler(repository, integration_id)
+    except IntegrationError as exc:
+        raise _to_http_exception(exc)
+
+
+@router.put("/{integration_id}", response_model=Integration)
+async def update_integration(
+    integration_id: str,
+    integration: IntegrationUpdate,
+    repository: IntegrationRepository = Depends(get_integration_repository),
+) -> Integration:
+    try:
+        return await update_integration_handler(repository, integration_id, integration)
+    except IntegrationError as exc:
+        raise _to_http_exception(exc)
+
+
 __all__ = [
     "IntegrationError",
     "IntegrationNotFoundError",
@@ -71,4 +119,6 @@ __all__ = [
     "get_integration_handler",
     "list_integrations_handler",
     "update_integration_handler",
+    "router",
+    "get_integration_repository",
 ]

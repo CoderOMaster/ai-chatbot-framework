@@ -31,7 +31,7 @@ class SilentUndefined(Undefined):
         __call__
     ) = __getitem__ = __lt__ = __le__ = __gt__ = __ge__ = __int__ = __float__ = (
         __complex__
-    ) = __pow__ = __rpow__ = _fail_with_undefined_error
+    ) = __pow__ = __rpow__ = __str__ = _fail_with_undefined_error
 
 
 __all__ = ["SilentUndefined", "split_sentence"]

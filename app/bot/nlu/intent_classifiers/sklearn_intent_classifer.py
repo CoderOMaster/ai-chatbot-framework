@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import cloudpickle
 import numpy as np
-from pydantic import BaseSettings
+from pydantic_settings import BaseSettings
 from sklearn.base import ClassifierMixin
 
 from app.bot.nlu.pipeline import NLUComponent
