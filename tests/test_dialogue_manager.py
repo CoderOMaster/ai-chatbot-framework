@@ -1,373 +1,484 @@
 import pytest
-from unittest.mock import Mock, patch, AsyncMock
-from app.bot.dialogue_manager.dialogue_manager import DialogueManager
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
+from unittest.mock import AsyncMock
+
+from app.bot.dialogue_manager.dialogue_manager import (
+    AsyncAPICaller,
+    DialogueManager,
+    DialogueManagerConfig,
+    DialogueManagerException,
+)
+from app.bot.dialogue_manager.http_client import HTTPResponse, APICallExcetion
 from app.bot.dialogue_manager.models import (
+    ApiDetailsModel,
     IntentModel,
     ParameterModel,
-    ApiDetailsModel,
     UserMessage,
 )
-from app.bot.memory import MemorySaver
+from app.bot.memory import MemorySaverInMemory
 from app.bot.memory.models import State
-from app.bot.nlu.pipeline import NLUPipeline
 
 
-@pytest.fixture
-def mock_nlu_pipeline():
-    pipeline = Mock(spec=NLUPipeline)
-    pipeline.process.return_value = {
-        "intent": {"intent": "greet", "confidence": 0.95},
-        "entities": {},
-    }
-    return pipeline
+@dataclass
+class DummyIntent:
+    name: str
+    intentId: str
+    speechResponse: str
+    userDefined: bool
+    apiTrigger: bool = False
+    apiDetails: Optional[Any] = None
+    parameters: Optional[List[Any]] = None
 
 
-@pytest.fixture
-def mock_memory_saver():
-    memory_saver = Mock(spec=MemorySaver)
-    memory_saver.get.return_value = None
-    memory_saver.init_state.return_value = State(
-        thread_id="user1",
-        user_message=UserMessage(text="", context={}, thread_id="user1"),
-        complete=False,
-        parameters=[],
-        extracted_parameters={},
-        missing_parameters=[],
-        current_node="",
-        intent={},
+@dataclass
+class DummyTraditionalSettings:
+    intent_detection_threshold: float
+
+
+@dataclass
+class DummyNLUConfig:
+    traditional_settings: DummyTraditionalSettings
+
+
+@dataclass
+class DummyBot:
+    nlu_config: DummyNLUConfig
+
+
+class FakeIntentRepository:
+    def __init__(self, intents: List[DummyIntent]) -> None:
+        self._intents = intents
+        self.list_intents_called = False
+
+    async def list_intents(self) -> List[DummyIntent]:
+        self.list_intents_called = True
+        return self._intents
+
+
+class FakeBotRepository:
+    def __init__(self, threshold: float) -> None:
+        self._bot = DummyBot(
+            nlu_config=DummyNLUConfig(
+                traditional_settings=DummyTraditionalSettings(threshold)
+            )
+        )
+        self.get_bot_called = False
+
+    async def get_bot(self, _bot_name: str) -> DummyBot:
+        self.get_bot_called = True
+        return self._bot
+
+
+class DummyNLUPipeline:
+    def __init__(
+        self,
+        process_result: Optional[Dict[str, Any]] = None,
+        load_result: bool = True,
+    ) -> None:
+        self.process_result = process_result or {
+            "intent": {"intent": "sample", "confidence": 1.0},
+            "entities": {},
+        }
+        self.load_result = load_result
+        self.load_calls: List[str] = []
+
+    def load(self, models_dir: str) -> bool:
+        self.load_calls.append(models_dir)
+        return self.load_result
+
+    def process(self, message: Dict[str, Any]) -> Dict[str, Any]:
+        return self.process_result
+
+
+class FakeAPICaller:
+    def __init__(self, response: HTTPResponse, should_raise: bool = False) -> None:
+        self.response = response
+        self.should_raise = should_raise
+        self.called_args: Optional[tuple] = None
+
+    async def __call__(
+        self,
+        url: str,
+        method: str,
+        headers: Optional[Dict[str, str]],
+        parameters: Optional[Dict[str, Any]],
+        is_json: bool,
+    ) -> HTTPResponse:
+        self.called_args = (url, method, headers, parameters, is_json)
+        if self.should_raise:
+            raise APICallExcetion("failed request")
+        return self.response
+
+
+async def _noop_api_caller(*args: Any, **kwargs: Any) -> HTTPResponse:
+    return HTTPResponse(status=200, body={}, headers={})
+
+
+def _build_dialogue_manager(
+    *,
+    intents: Optional[List[IntentModel]] = None,
+    fallback_intent_id: str = "fallback",
+    confidence_threshold: float = 0.5,
+    pipeline: Optional[DummyNLUPipeline] = None,
+    api_caller: AsyncAPICaller = _noop_api_caller,
+) -> DialogueManager:
+    base_intents = intents or [
+        IntentModel(name="Fallback", intent_id=fallback_intent_id, speech_response="fallback")
+    ]
+
+    if fallback_intent_id not in [intent.intent_id for intent in base_intents]:
+        base_intents.append(
+            IntentModel(name="Fallback", intent_id=fallback_intent_id, speech_response="fallback")
+        )
+
+    return DialogueManager(
+        memory_saver=MemorySaverInMemory(),
+        intents=base_intents,
+        nlu_pipeline=pipeline or DummyNLUPipeline(),
+        fallback_intent_id=fallback_intent_id,
+        intent_confidence_threshold=confidence_threshold,
+        api_caller=api_caller,
     )
-    return memory_saver
 
 
-@pytest.fixture
-def sample_intents():
-    greet_intent = IntentModel(
-        name="Greeting",
-        intent_id="greet",
-        parameters=[],
-        speech_response="Hello!",
-        api_trigger=False,
-        api_details=None,
+def _create_user_message(thread: str, text: str) -> UserMessage:
+    return UserMessage(thread_id=thread, text=text, context={})
+
+
+@pytest.mark.asyncio
+async def test_from_config_applies_explicit_threshold() -> None:
+    """Ensure the manager respects an explicitly provided confidence threshold."""
+    intents = [
+        DummyIntent(
+            name="fallback",
+            intentId="fallback",
+            speechResponse="Fallback response",
+            userDefined=True,
+        )
+    ]
+    intent_repository = FakeIntentRepository(intents)
+    bot_repository = FakeBotRepository(threshold=0.3)
+    config = DialogueManagerConfig(
+        fallback_intent_id="fallback",
+        bot_name="bot-alpha",
+        intent_confidence_threshold=0.75,
     )
 
-    order_pizza_intent = IntentModel(
-        name="Order Pizza",
-        intent_id="order_pizza",
-        parameters=[
-            ParameterModel(
-                name="size",
-                type="pizza_size",
-                required=True,
-                prompt="What size pizza would you like?",
-            ),
-            ParameterModel(
-                name="toppings",
-                type="pizza_topping",
-                required=True,
-                prompt="What toppings would you like?",
-            ),
+    manager = await DialogueManager.from_config(
+        intent_repository=intent_repository,
+        bot_repository=bot_repository,
+        memory_saver=MemorySaverInMemory(),
+        nlu_pipeline=DummyNLUPipeline(),
+        config=config,
+    )
+
+    assert manager.confidence_threshold == 0.75
+    assert intent_repository.list_intents_called
+    assert bot_repository.get_bot_called
+    assert "fallback" in manager.intents
+
+
+@pytest.mark.asyncio
+async def test_from_config_uses_bot_threshold_when_missing() -> None:
+    """Verify the threshold falls back to the bot store when not provided."""
+    intents = [
+        DummyIntent(
+            name="fallback",
+            intentId="fallback",
+            speechResponse="Fallback response",
+            userDefined=True,
+        )
+    ]
+    intent_repository = FakeIntentRepository(intents)
+    bot_repository = FakeBotRepository(threshold=0.4)
+    config = DialogueManagerConfig(
+        fallback_intent_id="fallback",
+        bot_name="bot-beta",
+        intent_confidence_threshold=None,
+    )
+
+    manager = await DialogueManager.from_config(
+        intent_repository=intent_repository,
+        bot_repository=bot_repository,
+        memory_saver=MemorySaverInMemory(),
+        nlu_pipeline=DummyNLUPipeline(),
+        config=config,
+    )
+
+    assert manager.confidence_threshold == 0.4
+
+
+def test_update_model_handles_reload_failure() -> None:
+    """Reload failures should clear the cached pipeline reference."""
+    pipeline = DummyNLUPipeline(load_result=False)
+    manager = _build_dialogue_manager(pipeline=pipeline)
+
+    manager.update_model("/models/path")
+
+    assert manager.nlu_pipeline is None
+    assert pipeline.load_calls == ["/models/path"]
+
+
+@pytest.mark.asyncio
+async def test_process_raises_when_pipeline_uninitialized() -> None:
+    """Processing should fail fast when no pipeline has been loaded."""
+    manager = DialogueManager(
+        memory_saver=MemorySaverInMemory(),
+        intents=[
+            IntentModel(name="fallback", intent_id="fallback", speech_response="none")
         ],
-        speech_response="Your {{parameters.size}} pizza with {{parameters.toppings}} will be ready soon!",
-        api_trigger=True,
-        api_details=ApiDetailsModel(
-            url="http://pizza-api/order",
-            request_type="POST",
-            headers=[{"headerKey": "Content-Type", "headerValue": "application/json"}],
-            is_json=True,
-            json_data='{"size": "{{parameters.size}}", "toppings": "{{parameters.toppings}}"}',
-        ),
+        nlu_pipeline=None,
+        fallback_intent_id="fallback",
+        intent_confidence_threshold=0.5,
+        api_caller=_noop_api_caller,
     )
 
-    fallback_intent = IntentModel(
-        name="Fallback",
-        intent_id="fallback",
-        parameters=[],
-        speech_response="I'm not sure I understand.",
-        api_trigger=False,
-        api_details=None,
-    )
+    with pytest.raises(DialogueManagerException):
+        await manager.process(_create_user_message("thread-1", "hello"))
 
+
+def test_get_intent_id_and_confidence_handles_command_input() -> None:
+    """Shortcut commands should bypass intent recognition confidence checks."""
+    manager = _build_dialogue_manager()
+    state = State(thread_id="thread-1")
+    state.user_message = _create_user_message("thread-1", "/help")
+
+    intent_id, confidence = manager._get_intent_id_and_confidence(state, {})
+
+    assert intent_id == "help"
+    assert confidence == 1.0
+
+
+def test_get_intent_id_and_confidence_below_threshold_returns_fallback() -> None:
+    """Low confidence predictions should fall back to the safe intent."""
+    manager = _build_dialogue_manager(confidence_threshold=0.6)
+    state = State(thread_id="thread-2")
+    state.user_message = _create_user_message("thread-2", "hi")
+    result = {"intent": {"intent": "ask", "confidence": 0.3}}
+
+    intent_id, confidence = manager._get_intent_id_and_confidence(state, result)
+
+    assert intent_id == manager.fallback_intent_id
+    assert confidence == 1.0
+
+
+def test_get_intent_id_and_confidence_above_threshold_returns_prediction() -> None:
+    """Valid predictions should be accepted when confidence is sufficient."""
+    manager = _build_dialogue_manager(confidence_threshold=0.5)
+    state = State(thread_id="thread-2")
+    state.user_message = _create_user_message("thread-2", "hi")
+    result = {"intent": {"intent": "ask", "confidence": 0.9}}
+
+    intent_id, confidence = manager._get_intent_id_and_confidence(state, result)
+
+    assert intent_id == "ask"
+    assert confidence == 0.9
+
+
+def test_get_fallback_intent_returns_configured_model() -> None:
+    """The configured fallback intent should be retrievable through the helper."""
+    manager = _build_dialogue_manager()
+
+    fallback_intent = manager._get_fallback_intent()
+
+    assert fallback_intent.intent_id == "fallback"
+
+
+def test_process_intent_handles_cancel_intent() -> None:
+    """Cancel intent execution should clear the tracked state and mark completion."""
     cancel_intent = IntentModel(
         name="Cancel",
         intent_id="cancel",
-        parameters=[],
-        speech_response="Operation cancelled.",
+        speech_response="Canceled",
+    )
+    active_intent = IntentModel(
+        name="Active",
+        intent_id="active",
+        speech_response="OK",
+    )
+    state = State(thread_id="thread-3")
+    state.parameters = [{"name": "foo"}]
+    state.extracted_parameters = {"foo": "value"}
+    state.missing_parameters = ["foo"]
+    state.current_node = "foo"
+
+    manager = _build_dialogue_manager(intents=[cancel_intent, active_intent])
+    updated, active = manager._process_intent(cancel_intent, active_intent, state)
+
+    assert updated.complete
+    assert updated.parameters == []
+    assert updated.extracted_parameters == {}
+    assert updated.missing_parameters == []
+    assert updated.current_node is None
+    assert active.intent_id == "cancel"
+
+
+def test_process_intent_tracks_missing_required_parameters() -> None:
+    """Required parameters that are not yet provided should trigger a prompt."""
+    parameter = ParameterModel(
+        name="email",
+        required=True,
+        type="email",
+        prompt="Your email please###Thanks",
+    )
+    query_intent = IntentModel(
+        name="CollectEmail",
+        intent_id="collect_email",
+        speech_response="Got it",
+        parameters=[parameter],
+    )
+    state = State(thread_id="thread-4")
+    state.nlu = {"entities": {}}
+
+    manager = _build_dialogue_manager(intents=[query_intent])
+    updated, _ = manager._process_intent(query_intent, query_intent, state)
+
+    assert updated.missing_parameters == ["email"]
+    assert updated.current_node == "email"
+    assert updated.bot_message == [
+        {"text": "Your email please"},
+        {"text": "Thanks"},
+    ]
+    assert not updated.complete
+
+
+@pytest.mark.asyncio
+async def test_handle_api_trigger_without_api_renders_response() -> None:
+    """Simple speech responses should be rendered even when no API is required."""
+    intent = IntentModel(
+        name="Hello",
+        intent_id="hello",
+        speech_response="Hello there###Again",
         api_trigger=False,
-        api_details=None,
+    )
+    state = State(thread_id="thread-5")
+    state.context = {"user": "tester"}
+    state.extracted_parameters = {"foo": "bar"}
+
+    manager = _build_dialogue_manager()
+    updated = await manager._handle_api_trigger(intent, state)
+
+    assert updated.bot_message == [{"text": "Hello there"}, {"text": "Again"}]
+
+
+@pytest.mark.asyncio
+async def test_handle_api_trigger_with_api_success_renders_template_result() -> None:
+    """API-backed intents should render their speech templates using the API payload."""
+    api_details = ApiDetailsModel(
+        url="https://example.com",
+        request_type="POST",
+        headers=[{"headerKey": "X-Test", "headerValue": "value"}],
+    )
+    intent = IntentModel(
+        name="APICall",
+        intent_id="api_call",
+        speech_response="API says {{result.body.message}}",
+        api_trigger=True,
+        api_details=api_details,
+    )
+    state = State(thread_id="thread-6")
+    state.context = {"scope": "test"}
+
+    manager = _build_dialogue_manager()
+    manager._call_intent_api = AsyncMock(
+        return_value=HTTPResponse(status=200, body={"message": "hello"}, headers={})
     )
 
-    return [greet_intent, order_pizza_intent, fallback_intent, cancel_intent]
+    updated = await manager._handle_api_trigger(intent, state)
+
+    assert updated.bot_message == [{"text": "API says hello"}]
+    manager._call_intent_api.assert_awaited_once()
 
 
-@pytest.fixture
-def dialogue_manager(mock_nlu_pipeline, mock_memory_saver, sample_intents):
-    return DialogueManager(
-        intents=sample_intents,
-        nlu_pipeline=mock_nlu_pipeline,
-        fallback_intent_id="fallback",
-        intent_confidence_threshold=0.90,
-        memory_saver=mock_memory_saver,
+@pytest.mark.asyncio
+async def test_handle_api_trigger_api_failure_returns_service_unavailable_message() -> None:
+    """Failures while calling a remote API should present a friendly fallback message."""
+    api_details = ApiDetailsModel(
+        url="https://example.com",
+        request_type="POST",
+        headers=[{"headerKey": "X-Test", "headerValue": "value"}],
+    )
+    intent = IntentModel(
+        name="APICall",
+        intent_id="api_call",
+        speech_response="API says {{result.body.message}}",
+        api_trigger=True,
+        api_details=api_details,
+    )
+    state = State(thread_id="thread-7")
+
+    manager = _build_dialogue_manager()
+    manager._call_intent_api = AsyncMock(side_effect=DialogueManagerException("remote"))
+
+    updated = await manager._handle_api_trigger(intent, state)
+
+    assert updated.bot_message == [
+        {"text": "Service is not available. Please try again later."}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_call_intent_api_constructs_json_payload_and_uses_headers() -> None:
+    """API calls should render URLs, headers, and JSON payloads before invoking the client."""
+    api_details = ApiDetailsModel(
+        url="https://example.com/{{context.endpoint}}",
+        request_type="POST",
+        headers=[{"headerKey": "X-Test", "headerValue": "value"}],
+        is_json=True,
+        json_data="{\"payload\": \"{{parameters.value}}\"}",
+    )
+    intent = IntentModel(
+        name="Trigger",
+        intent_id="trigger",
+        speech_response="Done",
+        api_trigger=True,
+        api_details=api_details,
+    )
+    current_state = State(thread_id="thread-8")
+    current_state.context = {"endpoint": "v1"}
+    current_state.extracted_parameters = {"value": "42"}
+
+    fake_caller = FakeAPICaller(
+        response=HTTPResponse(status=200, body={"ok": True}, headers={})
+    )
+    manager = _build_dialogue_manager(api_caller=fake_caller)
+
+    await manager._call_intent_api(intent, current_state)
+
+    assert fake_caller.called_args == (
+        "https://example.com/v1",
+        "POST",
+        {"X-Test": "value"},
+        {"payload": "42"},
+        True,
     )
 
 
-class TestDialogueManager:
-    @pytest.mark.asyncio
-    async def test_process_simple_intent(self, dialogue_manager, mock_memory_saver):
-        message = UserMessage(text="hello", context={}, thread_id="user1")
+@pytest.mark.asyncio
+async def test_call_intent_api_propagates_api_failures_as_dialogue_exceptions() -> None:
+    """Transport failures should be wrapped as dialogue manager exceptions."""
+    api_details = ApiDetailsModel(
+        url="https://example.com",
+        request_type="GET",
+        headers=[],
+    )
+    intent = IntentModel(
+        name="Trigger",
+        intent_id="trigger",
+        speech_response="Done",
+        api_trigger=True,
+        api_details=api_details,
+    )
+    current_state = State(thread_id="thread-9")
 
-        current_state = await dialogue_manager.process(message)
+    fake_caller = FakeAPICaller(
+        response=HTTPResponse(status=500, body={}, headers={}),
+        should_raise=True,
+    )
+    manager = _build_dialogue_manager(api_caller=fake_caller)
 
-        # Verify state was initialized and saved
-        mock_memory_saver.init_state.assert_called_once_with("user1")
-        mock_memory_saver.save.assert_called_once()
+    with pytest.raises(DialogueManagerException):
+        await manager._call_intent_api(intent, current_state)
 
-        assert current_state.complete is True
-        assert current_state.intent["id"] == "greet"
-        assert current_state.nlu["intent"]["intent"] == "greet"
-
-    @pytest.mark.asyncio
-    async def test_process_intent_with_parameters(
-        self, dialogue_manager, mock_nlu_pipeline, mock_memory_saver
-    ):
-        mock_nlu_pipeline.process.return_value = {
-            "intent": {"intent": "order_pizza", "confidence": 0.95},
-            "entities": {"pizza_size": "large"},
-        }
-
-        message = UserMessage(
-            text="I want a large pizza", context={}, thread_id="user1"
-        )
-
-        current_state = await dialogue_manager.process(message)
-
-        assert current_state.complete is False
-        assert current_state.current_node == "toppings"
-        assert "size" in current_state.extracted_parameters
-        assert current_state.extracted_parameters["size"] == "large"
-        assert "toppings" in current_state.missing_parameters
-
-    @pytest.mark.asyncio
-    async def test_fallback_intent_low_confidence(
-        self, dialogue_manager, mock_nlu_pipeline, mock_memory_saver
-    ):
-        mock_nlu_pipeline.process.return_value = {
-            "intent": {"intent": "greet", "confidence": 0.85},
-            "entities": {},
-        }
-
-        message = UserMessage(text="gibberish text", context={}, thread_id="user1")
-
-        current_state = await dialogue_manager.process(message)
-        assert current_state.complete is True
-        assert current_state.intent["id"] == "fallback"
-        assert current_state.nlu["intent"]["intent"] == "greet"
-
-    @pytest.mark.asyncio
-    async def test_cancel_active_intent(
-        self, dialogue_manager, mock_nlu_pipeline, mock_memory_saver
-    ):
-        # First start an intent with parameters
-        mock_nlu_pipeline.process.return_value = {
-            "intent": {"intent": "order_pizza", "confidence": 0.95},
-            "entities": {"pizza_size": "large"},
-        }
-
-        # Setup initial state with an active order_pizza intent
-        initial_state = State(
-            thread_id="user1",
-            user_message=UserMessage(
-                text="I want a large pizza", context={}, thread_id="user1"
-            ),
-            complete=False,
-            parameters=[{"name": "size", "type": "pizza_size", "required": True}],
-            extracted_parameters={"size": "large"},
-            missing_parameters=["toppings"],
-            current_node="toppings",
-            intent={"id": "order_pizza"},
-        )
-        initial_state.nlu = {
-            "intent": {"intent": "order_pizza", "confidence": 0.95},
-            "entities": {"pizza_size": "large"},
-        }
-        mock_memory_saver.get.return_value = initial_state
-
-        # Then cancel it
-        mock_nlu_pipeline.process.return_value = {
-            "intent": {"intent": "cancel", "confidence": 1.0},
-            "entities": {},
-        }
-
-        message = UserMessage(text="/cancel", context={}, thread_id="user1")
-
-        current_state = await dialogue_manager.process(message)
-
-        assert current_state.complete is True
-        assert current_state.intent["id"] == "cancel"
-        assert len(current_state.parameters) == 0
-        assert current_state.current_node is None
-
-    @pytest.mark.asyncio
-    async def test_state_persistence(
-        self, dialogue_manager, mock_nlu_pipeline, mock_memory_saver
-    ):
-        # Setup initial state
-        initial_state = State(
-            thread_id="user1",
-            user_message=UserMessage(
-                text="I want a pizza", context={}, thread_id="user1"
-            ),
-            complete=False,
-            parameters=[{"name": "size", "type": "pizza_size", "required": True}],
-            extracted_parameters={},
-            missing_parameters=["size"],
-            current_node="size",
-            intent={"id": "order_pizza"},
-        )
-        initial_state.nlu = {
-            "intent": {"intent": "order_pizza", "confidence": 0.95},
-            "entities": {},
-        }
-        mock_memory_saver.get.return_value = initial_state
-
-        # Send size parameter
-        mock_nlu_pipeline.process.return_value = {
-            "intent": {"intent": "order_pizza", "confidence": 0.95},
-            "entities": {"pizza_size": "large"},
-        }
-
-        message = UserMessage(text="large", context={}, thread_id="user1")
-
-        current_state = await dialogue_manager.process(message)
-
-        assert current_state.thread_id == "user1"
-        assert current_state.intent["id"] == "order_pizza"
-        assert current_state.extracted_parameters["size"] == "large"
-        assert current_state.current_node == "toppings"
-        assert not current_state.complete
-
-    @pytest.mark.asyncio
-    async def test_api_trigger(
-        self, dialogue_manager, mock_nlu_pipeline, mock_memory_saver
-    ):
-        # Setup initial state with size parameter
-        initial_state = State(
-            thread_id="user1",
-            user_message=UserMessage(
-                text="I want a large pizza", context={}, thread_id="user1"
-            ),
-            complete=False,
-            parameters=[
-                {"name": "size", "type": "pizza_size", "required": True},
-                {"name": "toppings", "type": "pizza_topping", "required": True},
-            ],
-            extracted_parameters={"size": "large"},
-            missing_parameters=["toppings"],
-            current_node="toppings",
-            intent={"id": "order_pizza"},
-        )
-        initial_state.nlu = {
-            "intent": {"intent": "order_pizza", "confidence": 0.95},
-            "entities": {"pizza_size": "large"},
-        }
-        mock_memory_saver.get.return_value = initial_state
-
-        # Mock API call
-        with patch(
-            "app.bot.dialogue_manager.dialogue_manager.call_api", new_callable=AsyncMock
-        ) as mock_call_api:
-            mock_call_api.return_value = {"status": "success"}
-
-            # Send toppings parameter
-            mock_nlu_pipeline.process.return_value = {
-                "intent": {"intent": "order_pizza", "confidence": 0.95},
-                "entities": {"pizza_topping": "pepperoni"},
-            }
-
-            message = UserMessage(text="pepperoni", context={}, thread_id="user1")
-
-            current_state = await dialogue_manager.process(message)
-
-            assert mock_call_api.called
-            assert current_state.complete is True
-            assert current_state.extracted_parameters["size"] == "large"
-            assert current_state.extracted_parameters["toppings"] == "pepperoni"
-
-    @pytest.mark.asyncio
-    async def test_process_intent_with_missing_parameters(
-        self, dialogue_manager, mock_nlu_pipeline, mock_memory_saver
-    ):
-        # handle missing size parameter
-
-        mock_nlu_pipeline.process.return_value = {
-            "intent": {"intent": "order_pizza", "confidence": 0.95},
-            "entities": {},
-        }
-
-        message = UserMessage(text="I want a pizza", context={}, thread_id="user2")
-
-        current_state = await dialogue_manager.process(message)
-
-        assert current_state.bot_message == [
-            {
-                "text": "What size pizza would you like?",
-            }
-        ]
-
-        assert current_state.complete is False
-        assert current_state.intent["id"] == "order_pizza"
-        assert current_state.current_node == "size"
-        assert current_state.missing_parameters == ["size", "toppings"]
-        assert current_state.extracted_parameters == {}
-
-        # handle missing toppings parameter
-
-        mock_nlu_pipeline.process.return_value = {
-            "intent": {"intent": "random_intent", "confidence": 0.40},
-            "entities": {"pizza_size": "large"},
-        }
-
-        message = UserMessage(text="large", context={}, thread_id="user2")
-
-        current_state = await dialogue_manager.process(message)
-
-        assert current_state.bot_message == [
-            {
-                "text": "What toppings would you like?",
-            }
-        ]
-
-        assert current_state.complete is False
-        assert current_state.intent["id"] == "order_pizza"
-        assert current_state.current_node == "toppings"
-        assert current_state.missing_parameters == ["toppings"]
-        assert current_state.extracted_parameters == {"size": "large"}
-
-        # handle final response
-
-        mock_nlu_pipeline.process.return_value = {
-            "intent": {"intent": "random_intent", "confidence": 0.40},
-            "entities": {"pizza_topping": "pepperoni"},
-        }
-
-        message = UserMessage(text="pepperoni", context={}, thread_id="user2")
-
-        with patch(
-            "app.bot.dialogue_manager.dialogue_manager.call_api", new_callable=AsyncMock
-        ) as mock_call_api:
-            mock_call_api.return_value = {"status": "success"}
-
-            current_state = await dialogue_manager.process(message)
-
-            assert mock_call_api.called
-
-            assert current_state.bot_message == [
-                {
-                    "text": "Your large pizza with pepperoni will be ready soon!",
-                }
-            ]
-
-            assert current_state.complete is True
-            assert current_state.intent["id"] == "order_pizza"
-            assert current_state.extracted_parameters["size"] == "large"
-            assert current_state.extracted_parameters["toppings"] == "pepperoni"
-            assert current_state.missing_parameters == []
+    assert fake_caller.called_args is not None

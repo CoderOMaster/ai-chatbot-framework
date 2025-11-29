@@ -1,17 +1,14 @@
-from app.database import ObjectIdField
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional, Dict, Any
-from bson import ObjectId
+"""Intent-related schema definitions shared between admin APIs and dialogue manager."""
+from typing import Any, Dict, List, Optional
 
-
-def generate_object_id() -> str:
-    return str(ObjectId())
+from core.types import ObjectIdField
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class LabeledSentences(BaseModel):
     """Schema for labeled sentences"""
 
-    id: ObjectIdField = Field(default_factory=generate_object_id)
+    id: Optional[ObjectIdField] = None
     data: List[str] = []
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -20,7 +17,7 @@ class LabeledSentences(BaseModel):
 class Parameter(BaseModel):
     """Parameter schema for intent parameters"""
 
-    id: ObjectIdField = Field(default_factory=generate_object_id)
+    id: Optional[ObjectIdField] = None
     name: str
     required: bool = False
     type: Optional[str] = None
@@ -39,6 +36,8 @@ class ApiDetails(BaseModel):
     jsonData: str = "{}"
 
     def get_headers(self) -> Dict[str, str]:
+        """Return headers keyed by header key name."""
+
         headers = {}
         for header in self.headers:
             headers[header["headerKey"]] = header["headerValue"]

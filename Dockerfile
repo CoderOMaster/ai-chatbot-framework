@@ -1,4 +1,4 @@
-FROM --platform=linux/x86_64 python:3.12.7-slim
+FROM --platform=linux/x86_64 python:3.11-slim
 
 WORKDIR /usr/src/app
 
@@ -10,8 +10,8 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+COPY app ./app
 
-EXPOSE 80
+EXPOSE 8000
 
-CMD ["fastapi", "run" ,"--host", "0.0.0.0","--port", "80" ]
+CMD ["uvicorn", "app.main:bot_app", "--host", "0.0.0.0", "--port", "8000"]
